@@ -1,27 +1,31 @@
 CREATE TABLE IF NOT EXISTS unifiedrecords (
+  slipdate        TEXT    NOT NULL,
+  partnercode     TEXT    NOT NULL,
+  receiptnumber   TEXT    NOT NULL,
+  linenumber      TEXT    NOT NULL,
+  flag            INTEGER NOT NULL,
+  jancode         TEXT,
+  yjcode          TEXT,
+  productname     TEXT,
+  packaging       TEXT,
+  datqty          INTEGER,
+  janquantity     INTEGER,
+  janunitname     TEXT,
+  janunitcode     TEXT,
+  yjquantity      REAL,
+  yjunitname      TEXT,
+  unitprice       REAL,
+  subtotalamount  REAL,
+  taxamount       REAL,
+  taxrate         REAL,
+  expirydate      TEXT,
+  lotnumber       TEXT,
 
-    slipdate text,
-    jancode text,
-    yjcode text,
-    productname text,
-    packaging text,
-    datqty integer,
-    janquantity integer,
-    janunitname text,
-    janunitcode text,
-    yjquantity real,
-    yjunitname text,
-    unitprice real,
-    subtotalamount real,
-    taxamount real,
-    taxrate real,
-    expirydate text,
-    lotnumber text,
-    receiptnumber text,
-    linenumber text,
-    flag integer,
-    partnercode text
+  CONSTRAINT uq_unifiedrecords
+    UNIQUE(partnercode, slipdate, receiptnumber, linenumber, flag)
 );
+
+
 
 CREATE TABLE IF NOT EXISTS jcshms (
 JC000 TEXT,
