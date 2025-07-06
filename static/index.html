@@ -1,0 +1,45 @@
+<!-- File: static/index.html -->
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>YAMATO 集計システム</title>
+  <link rel="stylesheet" href="/static/css/styles.css">
+  <link rel="icon" href="/favicon.ico" type="image/x-icon">
+  <link rel="shortcut icon" href="/favicon.ico" type="image/x-icon">
+</head>
+<body>
+
+  <header id="header">
+    <div id="indicator"></div>
+    <nav>
+      <button id="datBtn" class="btn">納品・返品</button>
+      <button id="usageBtn" class="btn">USAGE</button>
+      <button id="aggregateBtn" class="btn">集計</button>
+      <button id="inventoryBtn" class="btn">棚卸</button>
+      <button id="ma2Btn" class="btn">MA2編集</button>
+      <button id="inoutBtn" class="btn">出庫・入庫</button>
+    </nav>
+    <div id="aggregateFilter" style="display:none">
+      <!-- 集計フィルタ（実装時に中身を追加） -->
+    </div>
+  </header>
+
+  <!-- ファイル選択ボタン（非表示） -->
+  <input type="file" id="datInput" multiple style="display:none">
+  <input type="file" id="usageInput" multiple style="display:none">
+  <input type="file" id="inventoryInput" accept=".csv" style="display:none">
+
+  <!-- データ出力テーブル -->
+  <table id="outputTable">
+    <thead></thead>
+    <tbody></tbody>
+  </table>
+
+  <pre id="debug" style="background:#f0f0f0; padding:0.5em; margin:1em 0;"></pre>
+
+  <!-- 実装済みの DAT 機能だけを読み込む -->
+  <script src="/static/js/dat.js"></script>
+
+</body>
+</html>

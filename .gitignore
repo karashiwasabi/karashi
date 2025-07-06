@@ -1,0 +1,14 @@
+# データベース
+yamato.db
+
+# ビルド成果物
+*.exe
+*.dll
+
+# IDE設定
+.vscode/
+.idea/
+
+# OS固有
+Thumbs.db
+.DS_Store

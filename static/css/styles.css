@@ -1,0 +1,11 @@
+/* 余白・パディングは指定しない方針 */
+
+body {
+  font-family: sans-serif;
+}
+
+#output {
+  border: 1px solid #ccc;
+  background: #f9f9f9;
+  white-space: pre-wrap;
+}
