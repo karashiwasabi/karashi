@@ -2,16 +2,14 @@
 <!DOCTYPE html>
 <html lang="ja">
 <head>
-  <meta charset="UTF-8">
+  <meta charset="UTF-8" />
   <title>YAMATO 集計システム</title>
-  <link rel="stylesheet" href="/static/css/styles.css">
-  <link rel="icon" href="/favicon.ico" type="image/x-icon">
-  <link rel="shortcut icon" href="/favicon.ico" type="image/x-icon">
+  <link rel="stylesheet" href="/static/css/styles.css" />
+  <link rel="icon" href="/favicon.ico" type="image/x-icon" />
+  <link rel="shortcut icon" href="/favicon.ico" type="image/x-icon" />
 </head>
 <body>
-
   <header id="header">
-    <div id="indicator"></div>
     <nav>
       <button id="datBtn" class="btn">納品・返品</button>
       <button id="usageBtn" class="btn">USAGE</button>
@@ -19,27 +17,63 @@
       <button id="inventoryBtn" class="btn">棚卸</button>
       <button id="ma2Btn" class="btn">MA2編集</button>
       <button id="inoutBtn" class="btn">出庫・入庫</button>
+      <button id="printBtn" class="btn">印刷</button>
     </nav>
-    <div id="aggregateFilter" style="display:none">
-      <!-- 集計フィルタ（実装時に中身を追加） -->
-    </div>
   </header>
 
   <!-- ファイル選択ボタン（非表示） -->
-  <input type="file" id="datInput" multiple style="display:none">
-  <input type="file" id="usageInput" multiple style="display:none">
-  <input type="file" id="inventoryInput" accept=".csv" style="display:none">
+  <input type="file" id="datInput" multiple style="display:none" />
+  <input type="file" id="usageInput" multiple style="display:none" />
 
-  <!-- データ出力テーブル -->
+  <!-- デバッグメッセージ欄 -->
+  <pre id="debug"></pre>
+
+  <!-- データテーブル -->
   <table id="outputTable">
-    <thead></thead>
-    <tbody></tbody>
+    <colgroup>
+      <col><col><col><col><col><col><col>
+      <col><col><col><col><col><col><col>
+      <col><col><col><col><col><col><col>
+      <col><col>
+    </colgroup>
+    <thead>
+      <tr>
+        <th>日付</th>
+        <th>種別</th>
+        <th>YJ</th>
+        <th>JAN</th>
+        <th>製品名</th>
+        <th>包装</th>
+        <th>メーカー</th>
+        <th>個数</th>
+        <th>JAN数量</th>
+        <th>JAN単位</th>
+        <th>YJ数量</th>
+        <th>YJ単位</th>
+        <th>単価</th>
+        <th>金額</th>
+        <th>税額</th>
+        <th>税率</th>
+        <th>期限</th>
+        <th>ロット</th>
+        <th>得意先</th>
+        <th>伝票番号</th>
+        <th>行</th>
+        <th>MA</th>
+      </tr>
+    </thead>
+    <tbody>
+      <!-- JS で挿入 -->
+    </tbody>
   </table>
 
-  <pre id="debug" style="background:#f0f0f0; padding:0.5em; margin:1em 0;"></pre>
-
-  <!-- 実装済みの DAT 機能だけを読み込む -->
+  <!-- スクリプト読み込み -->
   <script src="/static/js/dat.js"></script>
-
+  <script src="/static/js/usage.js"></script>
+  <script>
+    // 印刷ボタン動作
+    document.getElementById("printBtn")
+      .addEventListener("click", () => window.print());
+  </script>
 </body>
 </html>

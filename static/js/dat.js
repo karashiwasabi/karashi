@@ -1,62 +1,105 @@
+// File: static/js/dat.js
+
 document.addEventListener("DOMContentLoaded", () => {
   const btn     = document.getElementById("datBtn");
   const input   = document.getElementById("datInput");
+  const debug   = document.getElementById("debug");
   const table   = document.getElementById("outputTable");
   const thead   = table.querySelector("thead");
   const tbody   = table.querySelector("tbody");
-  const indi    = document.getElementById("indicator");
 
+  // 「納品・返品」クリックでクリア＆ファイル選択
   btn.addEventListener("click", () => {
-    const filter = document.getElementById("aggregateFilter");
-    if (filter) filter.style.display = "none";
-
     thead.innerHTML = "";
     tbody.innerHTML = "";
-    indi.textContent = "";
+    debug.textContent = "";
     input.value = null;
     input.click();
   });
 
   input.addEventListener("change", async () => {
     if (!input.files.length) return;
-    indi.textContent = "DATファイルアップロード中…";
+    debug.textContent = "DATファイルアップロード中…";
 
-    for (let file of input.files) {
-      const form = new FormData();
-      form.append("datFileInput[]", file);
+    // form にファイル詰めて POST
+    const form = new FormData();
+    for (const file of input.files) {
+      form.append("file", file);
+    }
 
-      try {
-        const res  = await fetch("/uploadDat", { method: "POST", body: form });
-        const data = await res.json();
+    try {
+      const res = await fetch("/uploadDat", { method: "POST", body: form });
+      if (!res.ok) {
+        debug.textContent = `アップロード失敗: ${res.status}`;
+        return;
+      }
 
-        indi.textContent = `${file.name}：読み込み ${data.count} 件`;
-        thead.innerHTML = `
-          <tr>
-            <th>日付</th><th>JAN</th><th>YJ</th><th>商品名</th><th>包装</th>
-            <th>数量</th><th>JAN数</th><th>JAN単位</th><th>JAN単位CD</th>
-            <th>YJ数</th><th>YJ単位</th><th>単価</th><th>小計</th>
-            <th>税額</th><th>税率</th><th>期限</th><th>ロット</th>
-            <th>伝票</th><th>行</th><th>区分</th><th>得意先</th>
-          </tr>`;
+      const data    = await res.json();
+      const records = Array.isArray(data.records) ? data.records : [];
 
-        tbody.innerHTML = "";
-        data.records.forEach(rec => {
+      // カウンタ表示
+      debug.textContent =
+        `Parsed: ${data.parsed}, Duplicates: ${data.duplicates}, ` +
+        `MA: ${data.maCount}, DA: ${data.daCount}`;
+
+      // ヘッダー生成
+      thead.innerHTML = `
+        <tr>
+          <th>日付</th><th>種別</th><th>YJ</th><th>JAN</th><th>製品名</th>
+          <th>包装</th><th>メーカー</th><th class="num">個数</th>
+          <th class="num">JAN数量</th><th>JAN単位</th>
+          <th class="num">YJ数量</th><th>YJ単位</th><th class="num">単価</th>
+          <th class="num">金額</th><th class="num">税額</th><th class="num">税率</th>
+          <th>期限</th><th>ロット</th><th>得意先</th>
+          <th>伝票番号</th><th class="num">行</th><th>MA</th>
+        </tr>`;
+      tbody.innerHTML = "";
+
+      // デバッグ: Ama の中身と型を一度ログに出す
+      console.log(
+        "Ama values:",
+        records.map(r => ({ Ama: r.Ama, type: typeof r.Ama }))
+      );
+
+      // フィルタ：文字列化＋trim して「1〜6」を含むものだけ表示
+      records
+        .filter(r => {
+          const a = String(r.Ama).trim();
+          return ["1","2","3","4","5","6"].includes(a);
+        })
+        .forEach(rec => {
           const tr = document.createElement("tr");
+          tr.classList.add("modified");
           tr.innerHTML = `
-            <td>${rec.slipdate}</td><td>${rec.jancode}</td><td>${rec.yjcode}</td><td>${rec.productname}</td><td>${rec.packaging}</td>
-            <td>${rec.datqty}</td><td>${rec.janquantity}</td><td>${rec.janunitname}</td><td>${rec.janunitcode}</td>
-            <td>${rec.yjquantity}</td><td>${rec.yjunitname}</td><td>${rec.unitprice}</td>
-            <td>${rec.subtotalamount}</td><td>${rec.taxamount}</td><td>${rec.taxrate}</td>
-            <td>${rec.expirydate}</td><td>${rec.lotnumber}</td><td>${rec.receiptnumber}</td>
-            <td>${rec.linenumber}</td><td>${rec.flag}</td><td>${rec.partnercode}</td>
+            <td>${rec.Adate            || ""}</td>
+            <td>${rec.Aflag            || ""}</td>
+            <td>${rec.Ayj              || ""}</td>
+            <td>${rec.Ajc              || ""}</td>
+            <td>${rec.Apname           || ""}</td>
+            <td>${rec.Apkg             || ""}</td>
+            <td>${rec.Amaker           || ""}</td>
+            <td class="num">${rec.Adatqty    || ""}</td>
+            <td class="num">${rec.Ajanqty    || ""}</td>
+            <td>${rec.Ajanunitname     || ""}</td>
+            <td class="num">${rec.Ayjqty     || ""}</td>
+            <td>${rec.Ayjunitname      || ""}</td>
+            <td class="num">${rec.Aunitprice || ""}</td>
+            <td class="num">${rec.Asubtotal  || ""}</td>
+            <td class="num">${rec.Ataxamount || ""}</td>
+            <td class="num">${rec.Ataxrate   || ""}</td>
+            <td>${rec.Aexpdate         || ""}</td>
+            <td>${rec.Alot             || ""}</td>
+            <td>${rec.Apcode           || ""}</td>
+            <td>${rec.Arpnum           || ""}</td>
+            <td class="num">${rec.Alnum      || ""}</td>
+            <td>${String(rec.Ama).trim()  || ""}</td>
           `;
           tbody.appendChild(tr);
         });
 
-      } catch (err) {
-        console.error(err);
-        indi.textContent = "DATアップロードエラー: " + err.message;
-      }
+    } catch (err) {
+      console.error(err);
+      debug.textContent = "DATアップロードエラー: " + err.message;
     }
   });
 });

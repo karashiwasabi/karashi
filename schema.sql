@@ -1,31 +1,87 @@
-CREATE TABLE IF NOT EXISTS unifiedrecords (
-  slipdate        TEXT    NOT NULL,
-  partnercode     TEXT    NOT NULL,
-  receiptnumber   TEXT    NOT NULL,
-  linenumber      TEXT    NOT NULL,
-  flag            INTEGER NOT NULL,
-  jancode         TEXT,
-  yjcode          TEXT,
-  productname     TEXT,
-  packaging       TEXT,
-  datqty          INTEGER,
-  janquantity     INTEGER,
-  janunitname     TEXT,
-  janunitcode     TEXT,
-  yjquantity      REAL,
-  yjunitname      TEXT,
-  unitprice       REAL,
-  subtotalamount  REAL,
-  taxamount       REAL,
-  taxrate         REAL,
-  expirydate      TEXT,
-  lotnumber       TEXT,
+CREATE TABLE IF NOT EXISTS code_sequences (
+  name    TEXT PRIMARY KEY,
+  last_no INTEGER NOT NULL
+);
+INSERT OR IGNORE INTO code_sequences(name,last_no) VALUES ('MA2Y',0);
 
-  CONSTRAINT uq_unifiedrecords
-    UNIQUE(partnercode, slipdate, receiptnumber, linenumber, flag)
+
+
+
+ CREATE TABLE IF NOT EXISTS ma_master (
+  MA000    TEXT    PRIMARY KEY,
+  MA009    TEXT    UNIQUE NOT NULL DEFAULT '',   -- 発番済 YJ コード
+  MA018    TEXT    NOT NULL DEFAULT '',          -- 品名
+  MA022    TEXT    NOT NULL DEFAULT '',          -- 品名かな
+  MA030    TEXT    NOT NULL DEFAULT '',          -- メーカー
+  MA037    TEXT    NOT NULL DEFAULT '',          -- 包装
+  MA039    TEXT    NOT NULL DEFAULT '',          -- YJ側単位コード
+  MA044    TEXT    NOT NULL DEFAULT '',          -- YJ側数量文字列
+  MA061    INTEGER NOT NULL DEFAULT 0,           -- 毒薬
+  MA062    INTEGER NOT NULL DEFAULT 0,           -- 劇薬
+  MA063    INTEGER NOT NULL DEFAULT 0,           -- 麻薬
+  MA064    INTEGER NOT NULL DEFAULT 0,           -- 向精神薬
+  MA065    INTEGER NOT NULL DEFAULT 0,           -- 覚せい剤
+  MA066    INTEGER NOT NULL DEFAULT 0,           -- 覚醒剤原料
+  MA131    TEXT    NOT NULL DEFAULT '',          -- JAN単位名
+  MA132    TEXT    NOT NULL DEFAULT '',          -- JAN単位コード
+  MA133    TEXT    NOT NULL DEFAULT ''           -- JANあたり数量
+ );
+
+
+
+
+
+CREATE INDEX IF NOT EXISTS idxMaMasterMA009
+  ON ma_master(MA009);
+
+
+
+CREATE INDEX IF NOT EXISTS idx_master_MA009
+  ON ma_master(MA009);
+
+
+CREATE TABLE IF NOT EXISTS a_records (
+  adate                      TEXT    NOT NULL,
+  apcode                     TEXT    NOT NULL,
+  arpnum                     TEXT    NOT NULL,
+  alnum                      TEXT    NOT NULL,
+  aflag                      INTEGER NOT NULL,
+  ajc                        TEXT    NOT NULL,
+  ayj                        TEXT,
+  apname                     TEXT,
+  akana                      TEXT,
+  apkg                       TEXT,
+  amaker                     TEXT,
+  adatqty                    REAL,
+  ajanqty                    REAL,
+  ajpu                       REAL,
+  ajanunitname               TEXT,
+  ajanunitcode               TEXT,
+  ayjqty                     REAL,
+  ayjpu                      TEXT,
+  ayjunitname                TEXT,
+  aunitprice                 REAL,
+  asubtotal                  REAL,
+  ataxamount                 REAL,
+  ataxrate                   TEXT,
+  aexpdate                   TEXT,
+  alot                       TEXT,
+  adokuyaku                  INTEGER DEFAULT 0,
+  agekiyaku                  INTEGER DEFAULT 0,
+  amayaku                    INTEGER DEFAULT 0,
+  akouseisinyaku             INTEGER DEFAULT 0,
+  akakuseizai                INTEGER DEFAULT 0,
+  akakuseizaigenryou         INTEGER DEFAULT 0,
+  ama                        TEXT,
+  PRIMARY KEY (apcode, adate, arpnum, alnum, aflag)
 );
 
-
+-- ソート／フィルタ用インデックス
+CREATE INDEX IF NOT EXISTS idx_ar_apname_kana
+  ON a_records(akana);
+CREATE INDEX IF NOT EXISTS idx_ar_adokuyaku
+  ON a_records(adokuyaku);
+-- 必要に応じて他フラグにも INDEX を貼る
 
 CREATE TABLE IF NOT EXISTS jcshms (
 JC000 TEXT,
@@ -190,187 +246,20 @@ JA029 TEXT,
 PRIMARY KEY(JA001)
 );
 
-CREATE TABLE IF NOT EXISTS ma0 (
-MA000 TEXT,
-MA001 TEXT,
-MA002 TEXT,
-MA003 TEXT,
-MA004 TEXT,
-MA005 TEXT,
-MA006 TEXT,
-MA007 TEXT,
-MA008 TEXT,
-MA009 TEXT,
-MA010 TEXT,
-MA011 TEXT,
-MA012 TEXT,
-MA013 TEXT,
-MA014 TEXT,
-MA015 TEXT,
-MA016 TEXT,
-MA017 TEXT,
-MA018 TEXT,
-MA019 TEXT,
-MA020 TEXT,
-MA021 TEXT,
-MA022 TEXT,
-MA023 TEXT,
-MA024 TEXT,
-MA025 TEXT,
-MA026 TEXT,
-MA027 TEXT,
-MA028 TEXT,
-MA029 TEXT,
-MA030 TEXT,
-MA031 TEXT,
-MA032 TEXT,
-MA033 TEXT,
-MA034 TEXT,
-MA035 TEXT,
-MA036 TEXT,
-MA037 TEXT,
-MA038 TEXT,
-MA039 TEXT,
-MA040 TEXT,
-MA041 TEXT,
-MA042 TEXT,
-MA043 TEXT,
-MA044 TEXT,
-MA045 TEXT,
-MA046 TEXT,
-MA047 TEXT,
-MA048 TEXT,
-MA049 TEXT,
-MA050 TEXT,
-MA051 TEXT,
-MA052 TEXT,
-MA053 TEXT,
-MA054 TEXT,
-MA055 TEXT,
-MA056 TEXT,
-MA057 TEXT,
-MA058 TEXT,
-MA059 TEXT,
-MA060 TEXT,
-MA061 TEXT,
-MA062 TEXT,
-MA063 TEXT,
-MA064 TEXT,
-MA065 TEXT,
-MA066 TEXT,
-MA067 TEXT,
-MA068 TEXT,
-MA069 TEXT,
-MA070 TEXT,
-MA071 TEXT,
-MA072 TEXT,
-MA073 TEXT,
-MA074 TEXT,
-MA075 TEXT,
-MA076 TEXT,
-MA077 TEXT,
-MA078 TEXT,
-MA079 TEXT,
-MA080 TEXT,
-MA081 TEXT,
-MA082 TEXT,
-MA083 TEXT,
-MA084 TEXT,
-MA085 TEXT,
-MA086 TEXT,
-MA087 TEXT,
-MA088 TEXT,
-MA089 TEXT,
-MA090 TEXT,
-MA091 TEXT,
-MA092 TEXT,
-MA093 TEXT,
-MA094 TEXT,
-MA095 TEXT,
-MA096 TEXT,
-MA097 TEXT,
-MA098 TEXT,
-MA099 TEXT,
-MA100 TEXT,
-MA101 TEXT,
-MA102 TEXT,
-MA103 TEXT,
-MA104 TEXT,
-MA105 TEXT,
-MA106 TEXT,
-MA107 TEXT,
-MA108 TEXT,
-MA109 TEXT,
-MA110 TEXT,
-MA111 TEXT,
-MA112 TEXT,
-MA113 TEXT,
-MA114 TEXT,
-MA115 TEXT,
-MA116 TEXT,
-MA117 TEXT,
-MA118 TEXT,
-MA119 TEXT,
-MA120 TEXT,
-MA121 TEXT,
-MA122 TEXT,
-MA123 TEXT,
-MA124 TEXT,
-MA125 TEXT,
-MA126 TEXT,
-MA127 TEXT,
-MA128 TEXT,
-MA129 TEXT,
-MA130 TEXT,
-MA131 TEXT,
-MA132 TEXT,
-MA133 TEXT,
-MA134 TEXT,
-MA135 TEXT,
-MA136 TEXT,
-MA137 TEXT,
-MA138 TEXT,
-MA139 TEXT,
-MA140 TEXT,
-MA141 TEXT,
-MA142 TEXT,
-MA143 TEXT,
-MA144 TEXT,
-MA145 TEXT,
-MA146 TEXT,
-MA147 TEXT,
-MA148 TEXT,
-MA149 TEXT,
-MA150 TEXT,
-MA151 TEXT,
-MA152 TEXT,
-MA153 TEXT,
-MA154 TEXT,
-PRIMARY KEY(MA000)
+
+-- File: Sql/Schema/CreatePartnerMaster.sql
+
+-- パートナーコード → 社名マスター
+CREATE TABLE IF NOT EXISTS partner_master (
+  id   INTEGER PRIMARY KEY AUTOINCREMENT,
+  code TEXT    NOT NULL UNIQUE,    -- パートナーコード
+  name TEXT    NOT NULL            -- 社名
 );
 
--- ma2 テーブル（軽量版9項目＋内部ID）
-CREATE TABLE IF NOT EXISTS ma2 (
-  id             INTEGER PRIMARY KEY AUTOINCREMENT,
-  MA000     TEXT    UNIQUE NOT NULL,
-  MA009     TEXT    UNIQUE,
-  MA018     TEXT,
-  MA037     TEXT,
-  MA039     TEXT,
-  MA044     TEXT,
-  MA131     TEXT,
-  MA132     TEXT,
-  MA133     TEXT,
-  MA134     TEXT
-);
-
--- 挿入後にYJコードを自動採番するトリガー
-CREATE TRIGGER IF NOT EXISTS trg_ma2_assign_yj
-AFTER INSERT ON ma2
-FOR EACH ROW
-BEGIN
-  UPDATE ma2
-     SET MA009 = 'MA' || printf('%010d', NEW.id)
-   WHERE id = NEW.id;
-END;
+-- 初期４社登録
+INSERT OR IGNORE INTO partner_master (code, name) VALUES
+  ('902020014', 'スズケン'),
+  ('901660013', 'メディセオ'),
+  ('902690019', '中北薬品'),
+  ('902960013', 'アルフレッサ');
 
