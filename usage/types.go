@@ -1,8 +1,6 @@
 // File: usage/types.go
 package usage
 
-import "karashi/model"
-
 // ―――――――――――――――――――
 // Usage CSV の列インデックス定義
 //
@@ -29,7 +27,7 @@ type ParsedUsage struct {
 }
 
 // ――― brusage フェーズ用定数 ―――
-const BranchAflag = model.UsageAflag // = 3
+const BranchAflag = 3
 
 // Ama（グループ番号）定義
 const (

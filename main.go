@@ -14,8 +14,6 @@ import (
 	"syscall"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
-
 	"karashi/loader"
 	"karashi/tani"
 	"karashi/usage"

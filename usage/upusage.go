@@ -1,4 +1,3 @@
-// File: usage/upusage.go
 package usage
 
 import (

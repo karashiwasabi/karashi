@@ -6,14 +6,13 @@ import (
 	"fmt"
 
 	"karashi/db"
-	"karashi/model"
 )
 
 // HandleBranch2MA は Branch-2（JC 空・MA 未登録）のレコードを受け取り、
 // model.ARInput のスライスを返します。
 // 第1引数 conn は DB 接続、parsed はフィルタ済み ParsedUsage のリストです。
-func HandleBranch2MA(conn *sql.DB, parsed []model.ParsedUsage) ([]model.ARInput, error) {
-	var out []model.ARInput
+func HandleBranch2MA(conn *sql.DB, parsed []ParsedUsage) ([]ARInput, error) {
+	var out []ARInput
 
 	for i, rec := range parsed {
 		// Branch-2 条件: JC が空 && MA 未登録
@@ -38,7 +37,7 @@ func HandleBranch2MA(conn *sql.DB, parsed []model.ParsedUsage) ([]model.ARInput,
 		}
 
 		// ARInput を組み立て
-		ar := model.ARInput{
+		ar := ARInput{
 			Adate:  rec.Date,
 			Apcode: seq,                    // 自動採番
 			Arpnum: seq,                    // 伝票番号にも同じシーケンス

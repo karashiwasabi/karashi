@@ -4,12 +4,11 @@ package usage
 import (
 	"database/sql"
 	"fmt"
-	"karashi/model"
 )
 
 // PersistBranch2DA は Branch-2 用に生成した ARInput を
 // a_records テーブルに一括登録します。
-func PersistBranch2DA(db *sql.DB, ars []model.ARInput) error {
+func PersistBranch2DA(db *sql.DB, ars []ARInput) error {
 	const q = `
 INSERT INTO a_records (
   adate, apcode, arpnum, alnum, aflag, ajc, ayj, apname

@@ -268,92 +268,6 @@ func loadCSV(db *sql.DB, filepath, tablename string, columns int, skipHeader boo
 }
 
 
------ C:\Dev\KARASHI\model\types.go -----
-// File: model/types.go
-package model
-
-// UploadedDAT は /uploadDat ハンドラが受け取る生行データを表します。
-type UploadedDAT struct {
-	Line string // CSV/Dat 一行分の生テキスト
-}
-
-// ParsedDAT は .dat ファイルを固定長分解して得られるレコードです。
-// Usage ワークフローにも流用できるよう、YJQty/YJUnit を追加しています。
-type ParsedDAT struct {
-	SlipDate      string  // 処理日付 (YYYYMMDD)
-	PartnerCode   string  // 伝票上の得意先コード
-	ReceiptNumber string  // 伝票番号
-	LineNumber    string  // 行番号
-	Flag          int     // 種別フラグ
-	JANCode       string  // JANコード
-	ProductName   string  // 製品名
-	DatQty        float64 // DAT由来の数量
-	YJQty         float64 // YJ数量 (Usage/Branch用)
-	YJUnit        string  // YJ単位 (Usage/Branch用)
-	UnitPrice     float64 // 単価
-	Subtotal      float64 // 小計
-	ExpiryDate    string  // 有効期限 (YYYYMMDD)
-	LotNumber     string  // ロット番号
-}
-
-// ParsedUsage は Usage CSV を Shift_JIS→UTF-8 で読み込んだあと得られるレコードです。
-// CSV列順: Date, Jc, Yj, Pname, YjQty, YjUnitName
-type ParsedUsage struct {
-	Date       string  // CSV[0]: Date (YYYYMMDD)
-	Jc         string  // CSV[1]: 元JANコード
-	Yj         string  // CSV[2]: YJコード
-	Pname      string  // CSV[3]: 品名
-	YjQty      float64 // CSV[4]: YJ数量
-	YjUnitName string  // CSV[5]: YJ単位名称
-}
-
-// ARInput は a_records 登録前の共通入力型です。
-// Branch→MA→DA すべてで受け渡します。
-type ARInput struct {
-	Adate  string // adate       日付1
-	Apcode string // apcode      得意先コード2
-	Arpnum string // arpnum      伝票番号3
-	Alnum  string // alnum       行番号4
-	Aflag  int    // aflag       種別フラグ5
-
-	Ajc string // ajc         JANコード6
-	Ayj string // ayj         YJコード7
-
-	Apname             string  // 品名8
-	Akana              string  // 品名かな9
-	Apkg               string  // 包装10
-	Amaker             string  // メーカー11
-	Adatqty            float64 // DAT数量12
-	Ajanqty            float64 // JAN数量13
-	Ajpu               string  // JAN単位コード14
-	Ajanunitname       string  // JAN単位名称15
-	Ajanunitcode       string  // JAN単位コード16
-	Ayjqty             float64 // YJ数量17
-	Ayjpu              string  // YJ単位コード18
-	Ayjunitname        string  // YJ単位名称19
-	Aunitprice         float64 // 単価20
-	Asubtotal          float64 // 小計21
-	Ataxamount         float64 // 税額22
-	Ataxrate           string  // 税率23
-	Aexpdate           string  // 有効期限24
-	Alot               string  // ロット番号25
-	Adokuyaku          int     // 毒薬フラグ26
-	Agekiyaku          int     // 劇薬フラグ27
-	Amayaku            int     // 麻薬フラグ28
-	Akouseisinyaku     int     // 向精神薬フラグ29
-	Akakuseizai        int     // 覚せい剤フラグ30
-	Akakuseizaigenryou int     // 覚醒剤原料フラグ31
-
-	Ama string // 1～6 のルート番号32
-}
-
-// ARResult は DAハンドラが返す結果エイリアスです。
-type ARResult = ARInput
-
-// UsageAflag は brusage フェーズで設定する aflag 値です。
-const UsageAflag = 3
-
-
 ----- C:\Dev\KARASHI\static\css\styles.css -----
 /* File: static/css/styles.css */
 
@@ -833,13 +747,11 @@ package usage
 
 import (
 	"log"
-
-	"karashi/model"
 )
 
 // BranchUsage は現段階では ParsedUsage の JC 有無だけをログに出力します。
 // 「JC が空白 → group=12」「JC あり → group=3456」を示します。
-func branchUsage(parsed []model.ParsedUsage) {
+func branchUsage(parsed []ParsedUsage) {
 	for _, rec := range parsed {
 		group := "12"
 		if rec.Jc != "" {
@@ -850,63 +762,95 @@ func branchUsage(parsed []model.ParsedUsage) {
 }
 
 
------ C:\Dev\KARASHI\usage\pausage.go -----
+----- C:\Dev\KARASHI\usage\dausage2.go -----
+// File: usage/dausage2.go
 package usage
 
 import (
-	"encoding/csv"
-	"io"
-	"log"
-	"strconv"
+	"database/sql"
+	"fmt"
 
-	"karashi/model"
+// PersistBranch2DA は Branch-2 用に生成した ARInput を
+// a_records テーブルに一括登録します。
+func PersistBranch2DA(db *sql.DB, ars []ARInput) error {
+	const q = `
+INSERT INTO a_records (
+  adate, apcode, arpnum, alnum, aflag, ajc, ayj, apname
+  -- 必要に応じて他のカラムを追加
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+`
 
-	"golang.org/x/text/encoding/japanese"
-	"golang.org/x/text/transform"
+	for _, ar := range ars {
+		if _, err := db.Exec(
+			q,
+			ar.Adate,
+			ar.Apcode,
+			ar.Arpnum,
+			ar.Alnum,
+			ar.Aflag,
+			ar.Ajc,
+			ar.Ayj,
+			ar.Apname,
+		); err != nil {
+			return fmt.Errorf("PersistBranch2DA failed (Apcode=%s): %w", ar.Apcode, err)
+		}
+	}
+	return nil
+}
+
+
+----- C:\Dev\KARASHI\usage\mausage2.go -----
+// File: usage/mausage2.go
+package usage
+
+import (
+	"database/sql"
+	"fmt"
+
+	"karashi/db"
 )
 
-// ParseUsage は Shift_JIS の Usage CSV を読み込み、
-// model.ParsedUsage のスライスを返します。
-// フォーマット: Date,Jc,Yj,Pname,Yjqty,Yjunitname （ヘッダーなし）
-func ParseUsage(r io.Reader) ([]model.ParsedUsage, error) {
-	// Shift_JIS → UTF-8 変換
-	decoder := japanese.ShiftJIS.NewDecoder()
-	reader := csv.NewReader(transform.NewReader(r, decoder))
-	reader.LazyQuotes = true
-	reader.FieldsPerRecord = -1
+// HandleBranch2MA は Branch-2（JC 空・MA 未登録）のレコードを受け取り、
+// model.ARInput のスライスを返します。
+// 第1引数 conn は DB 接続、parsed はフィルタ済み ParsedUsage のリストです。
+func HandleBranch2MA(conn *sql.DB, parsed []ParsedUsage) ([]ARInput, error) {
+	var out []ARInput
 
-	var out []model.ParsedUsage
-	for {
-		rec, err := reader.Read()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			log.Printf("ParseUsage: read error: %v", err)
+	for i, rec := range parsed {
+		// Branch-2 条件: JC が空 && MA 未登録
+		if rec.Jc != "" {
 			continue
 		}
-		// 必要フィールド数を満たすかチェック
-		if len(rec) < 6 {
-			log.Printf("ParseUsage: unexpected field count: got %d, want ≥6", len(rec))
+		exists, err := db.ExistsByJan(conn, rec.Jc)
+		if err != nil {
+			return nil, fmt.Errorf("ExistsByJan error: %w", err)
+		}
+		if exists {
 			continue
 		}
 
-		// YJ数量を float64 に変換
-		qty, err := strconv.ParseFloat(rec[4], 64)
+		// 合成 JAN コード ("9999999999999"+品名)
+		syntheticJan := fmt.Sprintf("9999999999999%s", rec.Pname)
+
+		// 自動採番 (例: code_sequences から次の値を取得)
+		seq, err := db.NextSequence(conn, "MA2Y")
 		if err != nil {
-			log.Printf("ParseUsage: parse YjQty error for %q: %v", rec[4], err)
-			qty = 0
+			return nil, fmt.Errorf("NextSequence error: %w", err)
 		}
 
-		u := model.ParsedUsage{
-			Date:       rec[0],
-			Jc:         rec[2],
-			Yj:         rec[1],
-			Pname:      rec[3],
-			YjQty:      qty,
-			YjUnitName: rec[5],
+		// ARInput を組み立て
+		ar := model.ARInput{
+			Adate:  rec.Date,
+			Apcode: seq,                    // 自動採番
+			Arpnum: seq,                    // 伝票番号にも同じシーケンス
+			Alnum:  fmt.Sprintf("%d", i+1), // 行番号
+			Aflag:  BranchAflag,            // =3
+			Ajc:    syntheticJan,           // JC フィールドに合成JAN
+			Ayj:    rec.Yj,                 // YJ コード
+			Apname: rec.Pname,              // 品名
+			// 他フィールドはゼロ値 or 空文字で委ねる
 		}
-		out = append(out, u)
+		out = append(out, ar)
 	}
 
 	return out, nil
@@ -916,8 +860,6 @@ func ParseUsage(r io.Reader) ([]model.ParsedUsage, error) {
 ----- C:\Dev\KARASHI\usage\types.go -----
 // File: usage/types.go
 package usage
-
-import "karashi/model"
 
 // ―――――――――――――――――――
 // Usage CSV の列インデックス定義
@@ -945,7 +887,7 @@ type ParsedUsage struct {
 }
 
 // ――― brusage フェーズ用定数 ―――
-const BranchAflag = model.UsageAflag // = 3
+const BranchAflag = UsageAflag // = 3
 
 // Ama（グループ番号）定義
 const (
@@ -1037,58 +979,104 @@ type MaMaster struct {
 
 
 ----- C:\Dev\KARASHI\usage\upusage.go -----
+// File: usage/upusage.go
 package usage
 
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
-
-	"karashi/model"
 )
 
-// UploadUsageHandler は HTML から送信された Shift_JIS の Usage CSV を受け取り、
-// パース後には branchUsage でログ出力し、最終的に JSON を返します。
-func UploadUsageHandler(db *sql.DB) http.HandlerFunc {
+// UploadUsageHandler は Usage CSV を受け取り、パース→重複・期間フィルタ→分岐判定→
+// Branch-2 の MA2・DA 登録→分岐結果を JSON で返却するハンドラです。
+//
+//	db   : *sql.DB
+//	from : 期間フィルタ開始日 (YYYYMMDD)
+//	to   : 期間フィルタ終了日 (YYYYMMDD)
+func UploadUsageHandler(db *sql.DB, from, to string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 			return
 		}
-
 		if err := r.ParseMultipartForm(32 << 20); err != nil {
 			http.Error(w, "failed to parse multipart form: "+err.Error(), http.StatusBadRequest)
 			return
 		}
 		defer r.MultipartForm.RemoveAll()
 
-		var all []model.ParsedUsage
-		files := r.MultipartForm.File["file"]
-		for _, fh := range files {
+		// 1. CSV → []ParsedUsage
+		var all []ParsedUsage
+		for _, fh := range r.MultipartForm.File["file"] {
 			f, err := fh.Open()
 			if err != nil {
 				log.Printf("UploadUsageHandler: open file error: %v", err)
 				continue
 			}
-
-			records, err := ParseUsage(f)
+			recs, err := ParseUsage(f)
 			f.Close()
 			if err != nil {
 				log.Printf("UploadUsageHandler: parse error: %v", err)
 				continue
 			}
-			all = append(all, records...)
+			all = append(all, recs...)
 		}
 
-		// 分岐ログを出力
-		branchUsage(all)
+		// 2. 重複＆期間フィルタ
+		filtered := RemoveDupAndFilterByPeriod(all, from, to)
 
+		// 3. 分岐判定
+		branchResults := branchUsage(filtered)
+
+		// 4. Branch-2 のみ抽出 → MA2 生成 & DA 登録
+		var bs2 []ParsedUsage
+		for _, br := range branchResults {
+			if br.Ama == "2" {
+				bs2 = append(bs2, br.Parsed)
+			}
+		}
+		arInputs, err := HandleBranch2MA(db, bs2)
+		if err != nil {
+			log.Printf("UploadUsageHandler: HandleBranch2MA error: %v", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		if err := PersistBranch2DA(db, arInputs); err != nil {
+			log.Printf("UploadUsageHandler: PersistBranch2DA error: %v", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		// 5. JSON レスポンス
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		if err := json.NewEncoder(w).Encode(all); err != nil {
+		if err := json.NewEncoder(w).Encode(branchResults); err != nil {
 			log.Printf("UploadUsageHandler: json encode error: %v", err)
 		}
 	}
+}
+
+// RemoveDupAndFilterByPeriod は重複レコードを排除し、
+// Date が from～to 範囲外のものを除外します。
+func RemoveDupAndFilterByPeriod(
+	rs []ParsedUsage, from, to string,
+) []ParsedUsage {
+	seen := make(map[string]struct{}, len(rs))
+	var out []ParsedUsage
+	for _, r := range rs {
+		if r.Date < from || r.Date > to {
+			continue
+		}
+		key := fmt.Sprintf("%s|%s|%s|%s", r.Date, r.Jc, r.Yj, r.Pname)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, r)
+	}
+	return out
 }
 
 
@@ -1119,6 +1107,8 @@ import (
 func main() {
 	port := flag.String("port", "8080", "HTTP port")
 	dbPath := flag.String("db", "yamato.db", "SQLite file path")
+	from := flag.String("from", "00000101", "filter start date (YYYYMMDD)")
+	to := flag.String("to", "99991231", "filter end date (YYYYMMDD)")
 	flag.Parse()
 
 	db, err := sql.Open("sqlite3", *dbPath)
@@ -1139,8 +1129,7 @@ func main() {
 
 	// HTTP ハンドラ登録
 	mux := http.NewServeMux()
-	//mux.HandleFunc("/uploadDat", dat.UploadDat10(db))
-	mux.Handle("/uploadUsage", usage.UploadUsageHandler(db))
+	mux.Handle("/uploadUsage", usage.UploadUsageHandler(db, *from, *to))
 	mux.Handle("/static/", http.StripPrefix("/static/",
 		http.FileServer(http.Dir("./static"))))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {

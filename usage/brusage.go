@@ -2,13 +2,11 @@ package usage
 
 import (
 	"log"
-
-	"karashi/model"
 )
 
 // BranchUsage は現段階では ParsedUsage の JC 有無だけをログに出力します。
 // 「JC が空白 → group=12」「JC あり → group=3456」を示します。
-func branchUsage(parsed []model.ParsedUsage) {
+func branchUsage(parsed []ParsedUsage) {
 	for _, rec := range parsed {
 		group := "12"
 		if rec.Jc != "" {
