@@ -7,25 +7,26 @@ INSERT OR IGNORE INTO code_sequences(name,last_no) VALUES ('MA2Y',0);
 
 
 
- CREATE TABLE IF NOT EXISTS ma_master (
-  MA000    TEXT    PRIMARY KEY,
-  MA009    TEXT    UNIQUE NOT NULL DEFAULT '',   -- 発番済 YJ コード
-  MA018    TEXT    NOT NULL DEFAULT '',          -- 品名
-  MA022    TEXT    NOT NULL DEFAULT '',          -- 品名かな
-  MA030    TEXT    NOT NULL DEFAULT '',          -- メーカー
-  MA037    TEXT    NOT NULL DEFAULT '',          -- 包装
-  MA039    TEXT    NOT NULL DEFAULT '',          -- YJ側単位コード
-  MA044    TEXT    NOT NULL DEFAULT '',          -- YJ側数量文字列
-  MA061    INTEGER NOT NULL DEFAULT 0,           -- 毒薬
-  MA062    INTEGER NOT NULL DEFAULT 0,           -- 劇薬
-  MA063    INTEGER NOT NULL DEFAULT 0,           -- 麻薬
-  MA064    INTEGER NOT NULL DEFAULT 0,           -- 向精神薬
-  MA065    INTEGER NOT NULL DEFAULT 0,           -- 覚せい剤
-  MA066    INTEGER NOT NULL DEFAULT 0,           -- 覚醒剤原料
-  MA131    TEXT    NOT NULL DEFAULT '',          -- JAN単位名
-  MA132    TEXT    NOT NULL DEFAULT '',          -- JAN単位コード
-  MA133    TEXT    NOT NULL DEFAULT ''           -- JANあたり数量
- );
+CREATE TABLE IF NOT EXISTS ma_master (
+  MA000   TEXT    PRIMARY KEY,
+  MA009   TEXT    NOT NULL DEFAULT '',      -- 発番済 YJ コード
+  MA018   TEXT    NOT NULL DEFAULT '',      -- 品名
+  MA022   TEXT    NOT NULL DEFAULT '',      -- 品名かな
+  MA030   TEXT    NOT NULL DEFAULT '',      -- メーカー
+  MA037   TEXT    NOT NULL DEFAULT '',      -- 包装
+  MA039   TEXT    NOT NULL DEFAULT '',      -- YJ側単位コード
+  -- vvv ここから下が修正箇所 vvv
+  MA044   REAL    NOT NULL DEFAULT 0,        -- YJ側数量 (TEXT→REAL)
+  MA061   INTEGER NOT NULL DEFAULT 0,        -- 毒薬
+  MA062   INTEGER NOT NULL DEFAULT 0,        -- 劇薬
+  MA063   INTEGER NOT NULL DEFAULT 0,        -- 麻薬
+  MA064   INTEGER NOT NULL DEFAULT 0,        -- 向精神薬
+  MA065   INTEGER NOT NULL DEFAULT 0,        -- 覚せい剤
+  MA066   INTEGER NOT NULL DEFAULT 0,        -- 覚醒剤原料
+  MA131   REAL    NOT NULL DEFAULT 0,        -- JANあたり数量1 (TEXT→REAL)
+  MA132   INTEGER NOT NULL DEFAULT 0,        -- JAN単位コード (TEXT→INTEGER)
+  MA133   REAL    NOT NULL DEFAULT 0         -- JANあたり数量2 (TEXT→REAL)
+);
 
 
 
@@ -39,14 +40,13 @@ CREATE INDEX IF NOT EXISTS idxMaMasterMA009
 CREATE INDEX IF NOT EXISTS idx_master_MA009
   ON ma_master(MA009);
 
-
 CREATE TABLE IF NOT EXISTS a_records (
-  adate                      TEXT    NOT NULL,
-  apcode                     TEXT    NOT NULL,
-  arpnum                     TEXT    NOT NULL,
-  alnum                      TEXT    NOT NULL,
-  aflag                      INTEGER NOT NULL,
-  ajc                        TEXT    NOT NULL,
+  adate                      TEXT,
+  apcode                     TEXT,
+  arpnum                     TEXT,
+  alnum                      TEXT,
+  aflag                      INTEGER,
+  ajc                        TEXT,
   ayj                        TEXT,
   apname                     TEXT,
   akana                      TEXT,
@@ -63,8 +63,8 @@ CREATE TABLE IF NOT EXISTS a_records (
   aunitprice                 REAL,
   asubtotal                  REAL,
   ataxamount                 REAL,
-  ataxrate                   TEXT,
-  aexpdate                   TEXT,
+  ataxrate                   REAL,
+  aexpdate                   REAL,
   alot                       TEXT,
   adokuyaku                  INTEGER DEFAULT 0,
   agekiyaku                  INTEGER DEFAULT 0,
@@ -73,7 +73,9 @@ CREATE TABLE IF NOT EXISTS a_records (
   akakuseizai                INTEGER DEFAULT 0,
   akakuseizaigenryou         INTEGER DEFAULT 0,
   ama                        TEXT,
-  PRIMARY KEY (apcode, adate, arpnum, alnum, aflag)
+  -- vvv ここから下が主キーの定義 vvv
+  PRIMARY KEY(adate, apcode, arpnum, alnum, aflag, ajc, ayj)
+  -- ^^^ ここまでが主キーの定義 ^^^
 );
 
 -- ソート／フィルタ用インデックス
@@ -128,7 +130,7 @@ JC040 TEXT,
 JC041 TEXT,
 JC042 TEXT,
 JC043 TEXT,
-JC044 TEXT,
+JC044 REAL,
 JC045 TEXT,
 JC046 TEXT,
 JC047 TEXT,
@@ -145,12 +147,12 @@ JC057 TEXT,
 JC058 TEXT,
 JC059 TEXT,
 JC060 TEXT,
-JC061 TEXT,
-JC062 TEXT,
-JC063 TEXT,
-JC064 TEXT,
-JC065 TEXT,
-JC066 TEXT,
+JC061 INTEGER, -- 毒薬フラグ (TEXT -> INTEGER)
+JC062 INTEGER, -- 劇薬フラグ (TEXT -> INTEGER)
+JC063 INTEGER, -- 麻薬フラグ (TEXT -> INTEGER)
+JC064 INTEGER, -- 向精神薬フラグ (TEXT -> INTEGER)
+JC065 INTEGER, -- 覚せい剤フラグ (TEXT -> INTEGER)
+JC066 INTEGER, -- 覚醒剤原料フラグ (TEXT -> INTEGER)
 JC067 TEXT,
 JC068 TEXT,
 JC069 TEXT,
@@ -219,9 +221,9 @@ JA002 TEXT,
 JA003 TEXT,
 JA004 TEXT,
 JA005 TEXT,
-JA006 TEXT,
-JA007 TEXT,
-JA008 TEXT,
+JA006 REAL,    -- JAN側 包装内数量 (TEXT -> REAL)
+JA007 TEXT,    -- JAN側 単位コード
+JA008 REAL,    -- JAN側 包装単位での数量 (TEXT -> REAL)
 JA009 TEXT,
 JA010 TEXT,
 JA011 TEXT,

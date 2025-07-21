@@ -7,11 +7,29 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 
 	"golang.org/x/text/encoding/japanese"
 	"golang.org/x/text/transform"
 )
+
+// 各テーブルのスキーマ情報（どの列が数値か）を定義します
+var tableSchemas = map[string]map[int]string{
+	"jcshms": {
+		44: "real", // JC044
+		61: "int",  // JC061
+		62: "int",
+		63: "int",
+		64: "int",
+		65: "int",
+		66: "int",
+	},
+	"jancode": { // jancodeの定義を元に戻します
+		7: "real", // JA006
+		9: "real", // JA008
+	},
+}
 
 func InitDatabase(db *sql.DB) error {
 	if err := applySchema(db); err != nil {
@@ -46,7 +64,9 @@ func loadCSV(db *sql.DB, filepath, tablename string, columns int, skipHeader boo
 	r.LazyQuotes = true
 	r.FieldsPerRecord = -1
 	if skipHeader {
-		_, _ = r.Read()
+		if _, err := r.Read(); err != nil && err != io.EOF {
+			return err
+		}
 	}
 
 	tx, err := db.Begin()
@@ -55,31 +75,52 @@ func loadCSV(db *sql.DB, filepath, tablename string, columns int, skipHeader boo
 	}
 	defer tx.Rollback()
 
-	ph := make([]string, columns)
-	for i := range ph {
-		ph[i] = "?"
+	placeholders := make([]string, columns)
+	for i := 0; i < columns; i++ {
+		placeholders[i] = "?"
 	}
 	stmt, err := tx.Prepare(fmt.Sprintf(
 		"INSERT OR REPLACE INTO %s VALUES (%s)",
-		tablename, strings.Join(ph, ","),
+		tablename, strings.Join(placeholders, ","),
 	))
 	if err != nil {
 		return err
 	}
 	defer stmt.Close()
 
+	schema := tableSchemas[tablename]
+
 	for {
 		row, err := r.Read()
 		if err == io.EOF {
 			break
 		}
-		if err != nil || len(row) != columns {
+		if err != nil || len(row) < columns {
 			continue
 		}
+
 		args := make([]interface{}, columns)
-		for i := range args {
-			args[i] = row[i]
+		for i, val := range row {
+			if i >= columns {
+				break
+			}
+			colType, isNumeric := schema[i+1]
+			if isNumeric {
+				switch colType {
+				case "real":
+					num, _ := strconv.ParseFloat(strings.TrimSpace(val), 64)
+					args[i] = num
+				case "int":
+					num, _ := strconv.ParseInt(strings.TrimSpace(val), 10, 64)
+					args[i] = num
+				default:
+					args[i] = val
+				}
+			} else {
+				args[i] = val
+			}
 		}
+
 		if _, err := stmt.Exec(args...); err != nil {
 			continue
 		}

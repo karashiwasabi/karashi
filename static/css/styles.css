@@ -45,6 +45,7 @@ header nav .btn {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  font-size: 12px; /* ← ここで指定します */
 }
 #outputTable thead th {
   position: sticky;
@@ -55,54 +56,60 @@ header nav .btn {
 }
 
 /* 列幅（％） */
-#outputTable colgroup col:nth-child( 1)  { width:  4.5%; }
-#outputTable colgroup col:nth-child( 2)  { width:  2.7%; }
-#outputTable colgroup col:nth-child( 3)  { width:  6.4%; }
-#outputTable colgroup col:nth-child( 4)  { width:  6.4%; }
-#outputTable colgroup col:nth-child( 5)  { width:  6.4%; }
-#outputTable colgroup col:nth-child( 6)  { width:  6.4%; }
-#outputTable colgroup col:nth-child( 7)  { width:  6.4%; }
-#outputTable colgroup col:nth-child( 8)  { width:  2.7%; }
-#outputTable colgroup col:nth-child( 9)  { width:  4.0%; }
-#outputTable colgroup col:nth-child(10)  { width:  4.0%; }
-#outputTable colgroup col:nth-child(11)  { width:  3.2%; }
-#outputTable colgroup col:nth-child(12)  { width:  3.2%; }
-#outputTable colgroup col:nth-child(13)  { width:  4.0%; }
-#outputTable colgroup col:nth-child(14)  { width:  4.0%; }
-#outputTable colgroup col:nth-child(15)  { width:  4.0%; }
-#outputTable colgroup col:nth-child(16)  { width:  2.7%; }
-#outputTable colgroup col:nth-child(17)  { width:  4.5%; }
-#outputTable colgroup col:nth-child(18)  { width:  6.4%; }
-#outputTable colgroup col:nth-child(19)  { width:  6.4%; }
-#outputTable colgroup col:nth-child(20)  { width:  6.4%; }
-#outputTable colgroup col:nth-child(21)  { width:  2.7%; }
-#outputTable colgroup col:nth-child(22)  { width:  2.6%; }
+#outputTable colgroup col:nth-child(1) { width: 4.32%; } /* 91px */
+#outputTable colgroup col:nth-child(2) { width: 2.13%; } /* 45px */
+#outputTable colgroup col:nth-child(3) { width: 5.50%; } /* 116px */
+#outputTable colgroup col:nth-child(4) { width: 5.88%; } /* 124px */
+#outputTable colgroup col:nth-child(5) { width: 8.63%; } /* 182px */
+#outputTable colgroup col:nth-child(6) { width: 4.74%; } /* 100px */
+#outputTable colgroup col:nth-child(7) { width: 8.63%; } /* 182px */
+#outputTable colgroup col:nth-child(8) { width: 2.13%; } /* 45px */
+#outputTable colgroup col:nth-child(9) { width: 3.42%; } /* 72px */
+#outputTable colgroup col:nth-child(10) { width: 4.74%; } /* 100px */
+#outputTable colgroup col:nth-child(11) { width: 3.46%; } /* 73px */
+#outputTable colgroup col:nth-child(12) { width: 2.80%; } /* 59px */
+#outputTable colgroup col:nth-child(13) { width: 4.13%; } /* 87px */
+#outputTable colgroup col:nth-child(14) { width: 3.46%; } /* 73px */
+#outputTable colgroup col:nth-child(15) { width: 4.74%; } /* 100px */
+#outputTable colgroup col:nth-child(16) { width: 4.74%; } /* 100px */
+#outputTable colgroup col:nth-child(17) { width: 2.75%; } /* 58px */
+#outputTable colgroup col:nth-child(18) { width: 2.13%; } /* 45px */
+#outputTable colgroup col:nth-child(19) { width: 3.94%; } /* 83px */
+#outputTable colgroup col:nth-child(20) { width: 4.74%; } /* 100px */
+#outputTable colgroup col:nth-child(21) { width: 4.74%; } /* 100px */
+#outputTable colgroup col:nth-child(22) { width: 4.74%; } /* 100px */
+#outputTable colgroup col:nth-child(23) { width: 1.61%; } /* 34px */
+#outputTable colgroup col:nth-child(24) { width: 1.80%; } /* 38px */
 
 /* テキスト揃え */
-#outputTable td:nth-child( 8),
-#outputTable td:nth-child( 9),
-#outputTable td:nth-child(11),
-#outputTable td:nth-child(13),
-#outputTable td:nth-child(14),
-#outputTable td:nth-child(15),
-#outputTable td:nth-child(16) { text-align: right; }
-
-#outputTable td:nth-child( 1),
-#outputTable td:nth-child( 2),
-#outputTable td:nth-child( 3),
-#outputTable td:nth-child( 4),
-#outputTable td:nth-child(17),
-#outputTable td:nth-child(21),
-#outputTable td:nth-child(22) { text-align: center; }
-
-#outputTable td:nth-child( 5),
-#outputTable td:nth-child( 6),
-#outputTable td:nth-child( 7),
+#outputTable td:nth-child(8),
+#outputTable td:nth-child(9),
 #outputTable td:nth-child(10),
 #outputTable td:nth-child(12),
-#outputTable td:nth-child(18),
+#outputTable td:nth-child(13),
+#outputTable td:nth-child(15),
+#outputTable td:nth-child(16),
+#outputTable td:nth-child(17),
+#outputTable td:nth-child(18) { text-align: right; }
+
+/* vvv 中央揃えの列番号を修正 vvv */
+#outputTable td:nth-child(1),
+#outputTable td:nth-child(2),
+#outputTable td:nth-child(3),
+#outputTable td:nth-child(4),
+#outputTable td:nth-child(21),
+#outputTable td:nth-child(23),
+#outputTable td:nth-child(24) { text-align: center; }
+
+/* vvv 左揃えの列番号を修正 vvv */
+#outputTable td:nth-child(5),
+#outputTable td:nth-child(6),
+#outputTable td:nth-child(7),
+#outputTable td:nth-child(11),
+#outputTable td:nth-child(14),
 #outputTable td:nth-child(19),
-#outputTable td:nth-child(20) { text-align: left; }
+#outputTable td:nth-child(20),
+#outputTable td:nth-child(22) { text-align: left; }
 
 /* フィルタ：MAフラグ "1" or "2" の行のみ表示 */
 #outputTable tbody tr { display: none; }

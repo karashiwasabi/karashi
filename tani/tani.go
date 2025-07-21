@@ -14,8 +14,10 @@ import (
 // internalMap にコード→名称を保持します
 var internalMap map[string]string
 
-// LoadTANIFile は ShiftJIS で保存された単位マスターCSVを読み込み、
-// code→名称のマップを返します。
+// ★ 新規追加: 名称→コードの逆引きマップ
+var reverseMap map[string]string
+
+// LoadTANIFile は ShiftJIS で保存された単位マスターCSVを読み込みます。
 func LoadTANIFile(path string) (map[string]string, error) {
 	file, err := os.Open(path)
 	if err != nil {
@@ -23,7 +25,6 @@ func LoadTANIFile(path string) (map[string]string, error) {
 	}
 	defer file.Close()
 
-	// ShiftJIS を UTF-8 に変換しつつ読み込む
 	decoder := japanese.ShiftJIS.NewDecoder()
 	reader := csv.NewReader(transform.NewReader(file, decoder))
 	reader.LazyQuotes = true
@@ -46,11 +47,17 @@ func LoadTANIFile(path string) (map[string]string, error) {
 		m[code] = name
 	}
 	internalMap = m
+
+	// ★ 新規追加: 読み込み時に逆引きマップも生成する
+	reverseMap = make(map[string]string)
+	for code, name := range internalMap {
+		reverseMap[name] = code
+	}
+
 	return m, nil
 }
 
 // ResolveName は与えられたコードの名称を返します。
-// マップに存在しない場合はコード自身を返します。
 func ResolveName(code string) string {
 	if internalMap == nil {
 		return code
@@ -59,4 +66,15 @@ func ResolveName(code string) string {
 		return name
 	}
 	return code
+}
+
+// ★ 新規追加: 単位名をコードに変換する関数
+func ResolveCode(name string) string {
+	if reverseMap == nil {
+		return "" // マップがなければ空文字を返す
+	}
+	if code, ok := reverseMap[name]; ok {
+		return code
+	}
+	return "" // 見つからなければ空文字を返す
 }

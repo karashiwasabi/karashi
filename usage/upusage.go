@@ -1,94 +1,96 @@
+// File: usage/upusage.go
 package usage
 
 import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"karashi/db"
+	"karashi/model"
 	"log"
 	"net/http"
 )
 
-// UploadUsageHandler は Usage CSV を受け取り、パース→重複・期間フィルタ→分岐判定→
-// Branch-2 の MA2・DA 登録→分岐結果を JSON で返却するハンドラです。
-//
-//	db   : *sql.DB
-//	from : 期間フィルタ開始日 (YYYYMMDD)
-//	to   : 期間フィルタ終了日 (YYYYMMDD)
-func UploadUsageHandler(db *sql.DB, from, to string) http.HandlerFunc {
+func UploadUsageHandler(conn *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// --- 1. ファイルパース ---
 		if r.Method != http.MethodPost {
 			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 			return
 		}
 		if err := r.ParseMultipartForm(32 << 20); err != nil {
-			http.Error(w, "failed to parse multipart form: "+err.Error(), http.StatusBadRequest)
+			http.Error(w, fmt.Sprintf("parse form error: %v", err), http.StatusBadRequest)
 			return
 		}
 		defer r.MultipartForm.RemoveAll()
 
-		// 1. CSV → []ParsedUsage
-		var all []ParsedUsage
-		for _, fh := range r.MultipartForm.File["file"] {
+		var allParsed []model.ParsedUsage
+		files := r.MultipartForm.File["file"]
+		if len(files) == 0 {
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			json.NewEncoder(w).Encode(map[string]interface{}{"records": []model.ARInput{}})
+			return
+		}
+
+		for _, fh := range files {
 			f, err := fh.Open()
 			if err != nil {
-				log.Printf("UploadUsageHandler: open file error: %v", err)
+				log.Printf("open file error: %v", err)
 				continue
 			}
+			defer f.Close()
+
 			recs, err := ParseUsage(f)
-			f.Close()
 			if err != nil {
-				log.Printf("UploadUsageHandler: parse error: %v", err)
+				log.Printf("parse error: %v", err)
 				continue
 			}
-			all = append(all, recs...)
+			allParsed = append(allParsed, recs...)
 		}
 
-		// 2. 重複＆期間フィルタ
-		filtered := RemoveDupAndFilterByPeriod(all, from, to)
+		// --- 2. 前処理 (重複フィルタ) ---
+		filtered := RemoveDuplicates(allParsed)
 
-		// 3. 分岐判定
-		branchResults := branchUsage(filtered)
+		// --- 3. 分岐処理 ---
+		var finalARs []model.ARInput
+		for _, pu := range filtered {
+			// ★★★ ここが修正点 ★★★
+			// 不要になった行番号の引数 'i' を削除
+			ar, err := ExecuteBranching(conn, pu)
+			if err != nil {
+				log.Printf("ExecuteBranching failed for JAN %q: %v", pu.Jc, err)
+				continue
+			}
+			finalARs = append(finalARs, ar)
+		}
 
-		// 4. Branch-2 のみ抽出 → MA2 生成 & DA 登録
-		var bs2 []ParsedUsage
-		for _, br := range branchResults {
-			if br.Ama == "2" {
-				bs2 = append(bs2, br.Parsed)
+		// --- 4. データベースへの一括保存 ---
+		if len(finalARs) > 0 {
+			if err := db.PersistARecords(conn, finalARs); err != nil {
+				log.Printf("PersistARecords error: %v", err)
+				http.Error(w, "internal server error", http.StatusInternalServerError)
+				return
 			}
 		}
-		arInputs, err := HandleBranch2MA(db, bs2)
-		if err != nil {
-			log.Printf("UploadUsageHandler: HandleBranch2MA error: %v", err)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
-			return
-		}
-		if err := PersistBranch2DA(db, arInputs); err != nil {
-			log.Printf("UploadUsageHandler: PersistBranch2DA error: %v", err)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
-			return
-		}
 
-		// 5. JSON レスポンス
+		// --- 5. JSONレスポンス ---
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		if err := json.NewEncoder(w).Encode(branchResults); err != nil {
-			log.Printf("UploadUsageHandler: json encode error: %v", err)
+		response := map[string]interface{}{
+			"records": finalARs,
+		}
+		if err := json.NewEncoder(w).Encode(response); err != nil {
+			log.Printf("json encode error: %v", err)
 		}
 	}
 }
 
-// RemoveDupAndFilterByPeriod は重複レコードを排除し、
-// Date が from～to 範囲外のものを除外します。
-func RemoveDupAndFilterByPeriod(
-	rs []ParsedUsage, from, to string,
-) []ParsedUsage {
+// RemoveDuplicatesは重複排除のみを行います。
+func RemoveDuplicates(rs []model.ParsedUsage) []model.ParsedUsage {
 	seen := make(map[string]struct{}, len(rs))
-	var out []ParsedUsage
+	var out []model.ParsedUsage
 	for _, r := range rs {
-		if r.Date < from || r.Date > to {
-			continue
-		}
 		key := fmt.Sprintf("%s|%s|%s|%s", r.Date, r.Jc, r.Yj, r.Pname)
-		if _, exists := seen[key]; exists {
+		if _, ok := seen[key]; ok {
 			continue
 		}
 		seen[key] = struct{}{}

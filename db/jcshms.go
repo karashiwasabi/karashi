@@ -3,73 +3,83 @@ package db
 
 import (
 	"database/sql"
-	"errors"
-	"log"
+	"fmt"
 )
 
-// JCShms は jcshms + jancode 結合結果。
-// フィールド名を SQL列名そのままに揃えています。
+// JCShmsは、jcshmsとjancodeテーブルを結合した結果を保持する構造体です。
 type JCShms struct {
-	JC000 string // 元JAN
-	JC009 string // YJコード
-	JC018 string // 品名
-	JC022 string // 品名かな
-	JC030 string // メーカー
-	JC037 string // 包装ベース
-
-	JC039 string // YJ単位名
-	JC044 string // YJあたり数量
-
-	JC061 int // 毒薬フラグ
-	JC062 int // 劇薬フラグ
-	JC063 int // 麻薬フラグ
-	JC064 int // 向精神薬フラグ
-	JC065 int // 覚せい剤フラグ
-	JC066 int // 覚醒剤原料フラグ
-
-	JA006 string // JAN単位名
-	JA007 string // JAN単位コード
-	JA008 string // JANあたり数量
+	JC009 string
+	JC018 string
+	JC022 string
+	JC030 string
+	JC037 string
+	JC039 string
+	JC044 float64 // vvv 修正点: stringからfloat64へ
+	JC061 int
+	JC062 int
+	JC063 int
+	JC064 int
+	JC065 int
+	JC066 int
+	// vvv ここから下がjancode由来の修正点 vvv
+	JA006 sql.NullFloat64 // JAN側 包装内数量
+	JA007 sql.NullString  // JAN側 単位コード (文字列のまま)
+	JA008 sql.NullFloat64 // JAN側 包装単位での数量
 }
 
+// GetJcshmsByJanは、JANコードを元にjcshmsとjancodeのデータをそれぞれ検索し、結果を結合します。
 func GetJcshmsByJan(conn *sql.DB, jan string) (*JCShms, error) {
-	const q = `
-SELECT
-  jc.JC000, jc.JC009, jc.JC018, jc.JC022, jc.JC030, jc.JC037,
-  jc.JC039, jc.JC044,
-  jc.JC061, jc.JC062, jc.JC063, jc.JC064, jc.JC065, jc.JC066,
-  jn.JA006, jn.JA007, jn.JA008
-FROM jcshms jc
-LEFT JOIN jancode jn ON jc.JC000 = jn.JA001
-WHERE jc.JC000 = ?`
+	// 最終的に返すための構造体
+	finalRec := &JCShms{}
+	found := false // どちらかのテーブルでデータが見つかったか
 
-	var r JCShms
-	err := conn.QueryRow(q, jan).Scan(
-		&r.JC000,
-		&r.JC009,
-		&r.JC018,
-		&r.JC022,
-		&r.JC030,
-		&r.JC037,
-		&r.JC039,
-		&r.JC044,
-		&r.JC061,
-		&r.JC062,
-		&r.JC063,
-		&r.JC064,
-		&r.JC065,
-		&r.JC066,
-		&r.JA006,
-		&r.JA007,
-		&r.JA008,
+	// --- 1. jcshmsテーブルをJC000で検索 ---
+	var jcshmsPart struct {
+		JC009, JC018, JC022, JC030, JC037, JC039 string
+		JC044                                    float64
+		JC061, JC062, JC063, JC064, JC065, JC066 int
+	}
+	const q1 = `SELECT JC009, JC018, JC022, JC030, JC037, JC039, JC044, JC061, JC062, JC063, JC064, JC065, JC066
+	              FROM jcshms WHERE JC000 = ? LIMIT 1`
+	err1 := conn.QueryRow(q1, jan).Scan(
+		&jcshmsPart.JC009, &jcshmsPart.JC018, &jcshmsPart.JC022, &jcshmsPart.JC030,
+		&jcshmsPart.JC037, &jcshmsPart.JC039, &jcshmsPart.JC044, &jcshmsPart.JC061,
+		&jcshmsPart.JC062, &jcshmsPart.JC063, &jcshmsPart.JC064, &jcshmsPart.JC065, &jcshmsPart.JC066,
 	)
-	if errors.Is(err, sql.ErrNoRows) {
-		log.Printf("[GetJcshmsByJan] no record for JAN=%q", jan)
-		return nil, sql.ErrNoRows
+	if err1 != nil && err1 != sql.ErrNoRows {
+		return nil, fmt.Errorf("jcshms search failed: %w", err1)
 	}
-	if err != nil {
-		log.Printf("[GetJcshmsByJan] query error for JAN=%q: %v", jan, err)
-		return nil, err
+	if err1 == nil {
+		found = true
+		finalRec.JC009 = jcshmsPart.JC009
+		finalRec.JC018 = jcshmsPart.JC018
+		finalRec.JC022 = jcshmsPart.JC022
+		finalRec.JC030 = jcshmsPart.JC030
+		finalRec.JC037 = jcshmsPart.JC037
+		finalRec.JC039 = jcshmsPart.JC039
+		finalRec.JC044 = jcshmsPart.JC044
+		finalRec.JC061 = jcshmsPart.JC061
+		finalRec.JC062 = jcshmsPart.JC062
+		finalRec.JC063 = jcshmsPart.JC063
+		finalRec.JC064 = jcshmsPart.JC064
+		finalRec.JC065 = jcshmsPart.JC065
+		finalRec.JC066 = jcshmsPart.JC066
 	}
-	return &r, nil
+
+	// --- 2. jancodeテーブルをJA001で検索 ---
+	const q2 = `SELECT JA006, JA007, JA008 FROM jancode WHERE JA001 = ? LIMIT 1`
+	err2 := conn.QueryRow(q2, jan).Scan(&finalRec.JA006, &finalRec.JA007, &finalRec.JA008)
+	if err2 != nil && err2 != sql.ErrNoRows {
+		return nil, fmt.Errorf("jancode search failed: %w", err2)
+	}
+	if err2 == nil {
+		found = true
+	}
+
+	// --- 3. どちらの検索でも見つからなければデータなしと判断 ---
+	if !found {
+		return nil, nil // Not found
+	}
+
+	return finalRec, nil
 }
