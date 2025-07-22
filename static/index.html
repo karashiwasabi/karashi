@@ -1,4 +1,3 @@
-<!-- File: static/index.html -->
 <!DOCTYPE html>
 <html lang="ja">
 <head>
@@ -21,15 +20,12 @@
     </nav>
   </header>
 
-  <!-- ファイル選択ボタン（非表示） -->
   <input type="file" id="datInput" multiple style="display:none" />
   <input type="file" id="usageInput" multiple style="display:none" />
-
-  <!-- デバッグメッセージ欄 -->
+  <input type="file" id="inventoryInput" style="display:none" />
   <pre id="debug"></pre>
 
-  <!-- データテーブル -->
-    <table id="outputTable">
+  <table id="outputTable">
     <colgroup>
       <col><col><col><col><col><col><col><col><col><col>
       <col><col><col><col><col><col><col><col><col><col>
@@ -50,9 +46,9 @@
       </tbody>
   </table>
 
-  <!-- スクリプト読み込み -->
   <script src="/static/js/dat.js"></script>
   <script src="/static/js/usage.js"></script>
+  <script src="/static/js/inventory.js"></script>
   <script>
     // 印刷ボタン動作
     document.getElementById("printBtn")

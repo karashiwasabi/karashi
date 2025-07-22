@@ -23,9 +23,9 @@ func ExecuteDatBranching(conn *sql.DB, prec model.ARInput) (model.ARInput, error
 	}
 	if master != nil {
 		if prec.Ajc == "0000000000000" {
-			return processDatBranch1(prec, master) // mrdat1
+			return processDatBranch1(prec, master)
 		}
-		return processDatBranch3(prec, master) // mrdat3
+		return processDatBranch3(prec, master)
 	}
 
 	jcshms, err := db.GetJcshmsByJan(conn, prec.Ajc)
@@ -34,15 +34,15 @@ func ExecuteDatBranching(conn *sql.DB, prec model.ARInput) (model.ARInput, error
 	}
 	if jcshms != nil {
 		if jcshms.JC009 != "" {
-			return processDatBranch4(conn, prec, jcshms) // mrdat4
+			return processDatBranch4(conn, prec, jcshms)
 		}
-		return processDatBranch5(conn, prec, jcshms) // mrdat5
+		return processDatBranch5(conn, prec, jcshms)
 	}
 
 	if prec.Ajc == "0000000000000" {
-		return processDatBranch2(conn, prec) // mrdat2
+		return processDatBranch2(conn, prec)
 	}
-	return processDatBranch6(conn, prec) // mrdat6
+	return processDatBranch6(conn, prec)
 }
 
 // --- Helper Functions for Each Branch ---
@@ -50,7 +50,10 @@ func ExecuteDatBranching(conn *sql.DB, prec model.ARInput) (model.ARInput, error
 // mrdat1: No JAN, ma_master exists
 func processDatBranch1(prec model.ARInput, master *model.MaMaster) (model.ARInput, error) {
 	prec.Ayj = master.MA009
+	prec.Apname = master.MA018 // <-- Fix: Add product name
 	prec.Ama = "1"
+	prec.Apkg = fmt.Sprintf("%s %g%s", master.MA037, master.MA044, tani.ResolveName(master.MA039))
+	prec.Amaker = master.MA030
 	return prec, nil
 }
 
@@ -74,32 +77,32 @@ func processDatBranch2(conn *sql.DB, prec model.ARInput) (model.ARInput, error) 
 // mrdat3: JAN exists, ma_master exists
 func processDatBranch3(prec model.ARInput, master *model.MaMaster) (model.ARInput, error) {
 	prec.Ayj = master.MA009
+	prec.Apname = master.MA018 // <-- Fix: Add product name
 	prec.Akana = master.MA022
-	pkg := fmt.Sprintf("%s %g%s", master.MA037, master.MA044, tani.ResolveName(master.MA039))
-	if master.MA131 != 0 && master.MA133 != 0 {
-		pkg += fmt.Sprintf(" (%g%s×%g%s)",
-			master.MA131, tani.ResolveName(master.MA039),
-			master.MA133, tani.ResolveName(strconv.Itoa(master.MA132)))
-	}
-	prec.Apkg = pkg
 	prec.Amaker = master.MA030
+	prec.Ayjpu = master.MA044
+	prec.Ajpu = master.MA133
+	prec.Ayjunitnm = tani.ResolveName(master.MA039)
+	prec.Ajanqty = prec.Adatqty * master.MA133
+	prec.Ayjqty = prec.Adatqty * prec.Ayjpu
 
-	// vvv 単位名のフォールバックロジックを追加 vvv
-	ayjunitnm := tani.ResolveName(master.MA039)
 	ajanunitcode := strconv.Itoa(master.MA132)
 	var ajanunitnm string
 	if ajanunitcode == "0" {
-		ajanunitnm = ayjunitnm
+		ajanunitnm = prec.Ayjunitnm
 	} else {
 		ajanunitnm = tani.ResolveName(ajanunitcode)
 	}
-	// ^^^ ここまで ^^^
-
-	prec.Ajanqty = prec.Adatqty * master.MA133
-	prec.Ajpu = master.MA133
 	prec.Ajanunitcode = ajanunitcode
 	prec.Ajanunitnm = ajanunitnm
-	prec.Ayjunitnm = ayjunitnm
+
+	pkg := fmt.Sprintf("%s %g%s", master.MA037, master.MA044, prec.Ayjunitnm)
+	if master.MA131 != 0 && master.MA133 != 0 {
+		pkg += fmt.Sprintf(" (%g%s×%g%s)",
+			master.MA131, prec.Ayjunitnm,
+			master.MA133, ajanunitnm)
+	}
+	prec.Apkg = pkg
 
 	prec.Ama = "3"
 	return prec, nil
@@ -123,34 +126,34 @@ func processDatBranch4(conn *sql.DB, prec model.ARInput, jcshms *db.JCShms) (mod
 	}
 
 	prec.Ayj = jcshms.JC009
+	prec.Apname = jcshms.JC018 // <-- Fix: Add product name
 	prec.Akana = jcshms.JC022
-	pkg := fmt.Sprintf("%s %g%s", jcshms.JC037, jcshms.JC044, tani.ResolveName(jcshms.JC039))
-	if jcshms.JA006.Valid && jcshms.JA008.Valid {
-		pkg += fmt.Sprintf(" (%g%s×%g%s)",
-			jcshms.JA006.Float64, tani.ResolveName(jcshms.JC039),
-			jcshms.JA008.Float64, tani.ResolveName(jcshms.JA007.String))
-	}
-	prec.Apkg = pkg
 	prec.Amaker = jcshms.JC030
-
-	// vvv 単位名のフォールバックロジックを追加 vvv
-	ayjunitnm := tani.ResolveName(jcshms.JC039)
-	ajanunitcode := jcshms.JA007.String
-	var ajanunitnm string
-	if ajanunitcode == "0" || ajanunitcode == "" {
-		ajanunitnm = ayjunitnm
-	} else {
-		ajanunitnm = tani.ResolveName(ajanunitcode)
-	}
-	// ^^^ ここまで ^^^
-
+	prec.Ayjpu = jcshms.JC044
+	prec.Ajpu = jcshms.JA008.Float64
+	prec.Ayjunitnm = tani.ResolveName(jcshms.JC039)
 	if jcshms.JA008.Valid {
 		prec.Ajanqty = prec.Adatqty * jcshms.JA008.Float64
 	}
-	prec.Ajpu = jcshms.JA008.Float64
+	prec.Ayjqty = prec.Adatqty * prec.Ayjpu
+
+	ajanunitcode := jcshms.JA007.String
+	var ajanunitnm string
+	if ajanunitcode == "0" || ajanunitcode == "" {
+		ajanunitnm = prec.Ayjunitnm
+	} else {
+		ajanunitnm = tani.ResolveName(ajanunitcode)
+	}
 	prec.Ajanunitcode = ajanunitcode
 	prec.Ajanunitnm = ajanunitnm
-	prec.Ayjunitnm = ayjunitnm
+
+	pkg := fmt.Sprintf("%s %g%s", jcshms.JC037, jcshms.JC044, prec.Ayjunitnm)
+	if jcshms.JA006.Valid && jcshms.JA008.Valid {
+		pkg += fmt.Sprintf(" (%g%s×%g%s)",
+			jcshms.JA006.Float64, prec.Ayjunitnm,
+			jcshms.JA008.Float64, ajanunitnm)
+	}
+	prec.Apkg = pkg
 
 	prec.Ama = "4"
 	return prec, nil
@@ -163,34 +166,34 @@ func processDatBranch5(conn *sql.DB, prec model.ARInput, jcshms *db.JCShms) (mod
 		return model.ARInput{}, err
 	}
 	prec.Ayj = newYj
+	prec.Apname = jcshms.JC018 // <-- Fix: Add product name
 	prec.Akana = jcshms.JC022
-	pkg := fmt.Sprintf("%s %g%s", jcshms.JC037, jcshms.JC044, tani.ResolveName(jcshms.JC039))
-	if jcshms.JA006.Valid && jcshms.JA008.Valid {
-		pkg += fmt.Sprintf(" (%g%s×%g%s)",
-			jcshms.JA006.Float64, tani.ResolveName(jcshms.JC039),
-			jcshms.JA008.Float64, tani.ResolveName(jcshms.JA007.String))
-	}
-	prec.Apkg = pkg
 	prec.Amaker = jcshms.JC030
-
-	// vvv 単位名のフォールバックロジックを追加 vvv
-	ayjunitnm := tani.ResolveName(jcshms.JC039)
-	ajanunitcode := jcshms.JA007.String
-	var ajanunitnm string
-	if ajanunitcode == "0" || ajanunitcode == "" {
-		ajanunitnm = ayjunitnm
-	} else {
-		ajanunitnm = tani.ResolveName(ajanunitcode)
-	}
-	// ^^^ ここまで ^^^
-
+	prec.Ayjpu = jcshms.JC044
+	prec.Ajpu = jcshms.JA008.Float64
+	prec.Ayjunitnm = tani.ResolveName(jcshms.JC039)
 	if jcshms.JA008.Valid {
 		prec.Ajanqty = prec.Adatqty * jcshms.JA008.Float64
 	}
-	prec.Ajpu = jcshms.JA008.Float64
+	prec.Ayjqty = prec.Adatqty * prec.Ayjpu
+
+	ajanunitcode := jcshms.JA007.String
+	var ajanunitnm string
+	if ajanunitcode == "0" || ajanunitcode == "" {
+		ajanunitnm = prec.Ayjunitnm
+	} else {
+		ajanunitnm = tani.ResolveName(ajanunitcode)
+	}
 	prec.Ajanunitcode = ajanunitcode
 	prec.Ajanunitnm = ajanunitnm
-	prec.Ayjunitnm = ayjunitnm
+
+	pkg := fmt.Sprintf("%s %g%s", jcshms.JC037, jcshms.JC044, prec.Ayjunitnm)
+	if jcshms.JA006.Valid && jcshms.JA008.Valid {
+		pkg += fmt.Sprintf(" (%g%s×%g%s)",
+			jcshms.JA006.Float64, prec.Ayjunitnm,
+			jcshms.JA008.Float64, ajanunitnm)
+	}
+	prec.Apkg = pkg
 
 	masterInput := model.MaMasterInput{
 		MA000: prec.Ajc, MA009: prec.Ayj, MA018: jcshms.JC018, MA022: jcshms.JC022, MA030: jcshms.JC030,

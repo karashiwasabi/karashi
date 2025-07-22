@@ -78,6 +78,18 @@ CREATE TABLE IF NOT EXISTS a_records (
   -- ^^^ ここまでが主キーの定義 ^^^
 );
 
+-- =========================================
+-- 棚卸 (Inventory) テーブル定義
+-- =========================================
+CREATE TABLE IF NOT EXISTS inventory (
+  inv_date         TEXT    NOT NULL,
+  inv_jan_code     TEXT    NOT NULL,
+  inv_yj_code      TEXT,
+  inv_product_name TEXT,
+  inv_quantity     REAL    NOT NULL,
+  PRIMARY KEY (inv_date, inv_jan_code)
+);
+
 -- ソート／フィルタ用インデックス
 CREATE INDEX IF NOT EXISTS idx_ar_apname_kana
   ON a_records(akana);

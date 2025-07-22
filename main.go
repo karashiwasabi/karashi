@@ -17,6 +17,7 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 
 	"karashi/dat" // datパッケージをインポート
+	"karashi/inventory"
 	"karashi/loader"
 	"karashi/tani"
 	"karashi/usage"
@@ -48,7 +49,8 @@ func main() {
 	// HTTPハンドラを登録
 	mux := http.NewServeMux()
 	mux.Handle("/uploadUsage", usage.UploadUsageHandler(db))
-	mux.Handle("/uploadDat", dat.UploadDatHandler(db)) // ← この行を追加
+	mux.Handle("/uploadDat", dat.UploadDatHandler(db))                   // ← この行を追加
+	mux.Handle("/uploadInventory", inventory.UploadInventoryHandler(db)) // ← この行を追加
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("./static"))))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		http.ServeFile(w, r, "./static/index.html")

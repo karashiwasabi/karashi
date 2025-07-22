@@ -52,24 +52,26 @@ func ExecuteBranching(conn *sql.DB, pu model.ParsedUsage) (model.ARInput, error)
 
 // processBranch1: Use an existing ma_master record.
 func processBranch1(pu model.ParsedUsage, master *model.MaMaster) (model.ARInput, error) {
-	pkg := fmt.Sprintf("%s %g%s", master.MA037, master.MA044, tani.ResolveName(master.MA039))
-	if master.MA131 != 0 && master.MA133 != 0 {
-		pkg += fmt.Sprintf(" (%g%s×%g)", master.MA131, tani.ResolveName(strconv.Itoa(master.MA132)), master.MA133)
-	}
-
-	janQty := 0.0
-	if master.MA131 != 0 {
-		janQty = pu.YjQty / master.MA131
-	}
-
-	ajanunitcode := strconv.Itoa(master.MA132)
 	ayjunitnm := tani.ResolveName(master.MA039)
+	ajanunitcode := strconv.Itoa(master.MA132)
 	var ajanunitnm string
 	if ajanunitcode == "0" {
 		ajanunitnm = ayjunitnm
 	} else {
 		ajanunitnm = tani.ResolveName(ajanunitcode)
 	}
+
+	pkg := fmt.Sprintf("%s %g%s", master.MA037, master.MA044, ayjunitnm)
+	if master.MA131 != 0 && master.MA133 != 0 {
+		pkg += fmt.Sprintf(" (%g%s×%g%s)", master.MA131, ayjunitnm, master.MA133, ajanunitnm)
+	}
+
+	// vvv ここが修正箇所 vvv
+	janQty := 0.0
+	if master.MA131 != 0 { // MA133 から MA131 に変更
+		janQty = pu.YjQty / master.MA131
+	}
+	// ^^^ ここまで ^^^
 
 	return model.ARInput{
 		Adate:              pu.Date,
@@ -82,11 +84,11 @@ func processBranch1(pu model.ParsedUsage, master *model.MaMaster) (model.ARInput
 		Amaker:             master.MA030,
 		Ajanqty:            janQty,
 		Ajpu:               master.MA133,
-		Ajanunitnm:         ajanunitnm, // 新しく作成した`ajanunitnm`変数をここで使用します
-		Ajanunitcode:       strconv.Itoa(master.MA132),
+		Ajanunitnm:         ajanunitnm,
+		Ajanunitcode:       ajanunitcode,
 		Ayjqty:             pu.YjQty,
 		Ayjpu:              master.MA044,
-		Ayjunitnm:          tani.ResolveName(master.MA039),
+		Ayjunitnm:          ayjunitnm,
 		Adokuyaku:          master.MA061,
 		Agekiyaku:          master.MA062,
 		Amayaku:            master.MA063,
@@ -94,7 +96,6 @@ func processBranch1(pu model.ParsedUsage, master *model.MaMaster) (model.ARInput
 		Akakuseizai:        master.MA065,
 		Akakuseizaigenryou: master.MA066,
 		Ama:                Ama1,
-		Alnum:              "",
 	}, nil
 }
 
@@ -125,7 +126,6 @@ func processBranch2(conn *sql.DB, pu model.ParsedUsage) (model.ARInput, error) {
 		Ayjqty:    pu.YjQty,
 		Ayjunitnm: pu.YjUnitName,
 		Ama:       Ama2,
-		Alnum:     "",
 	}, nil
 }
 
@@ -175,7 +175,6 @@ func processBranch6(conn *sql.DB, pu model.ParsedUsage) (model.ARInput, error) {
 		Ayjqty:    pu.YjQty,
 		Ayjunitnm: pu.YjUnitName,
 		Ama:       Ama6,
-		Alnum:     "",
 	}, nil
 }
 
@@ -202,7 +201,6 @@ func createMasterFromJcshms(conn *sql.DB, jan, yj string, jcshms *db.JCShms) err
 		MA133: jcshms.JA008.Float64,
 	}
 
-	// Convert the string unit code (JA007) to an integer for MA132.
 	if jcshms.JA007.Valid {
 		if val, err := strconv.Atoi(jcshms.JA007.String); err == nil {
 			masterInput.MA132 = val
@@ -218,11 +216,20 @@ func createARInputFromJcshms(pu model.ParsedUsage, yj string, jcshms *db.JCShms,
 	ja007Str := jcshms.JA007.String
 	ja008 := jcshms.JA008.Float64
 
-	pkg := fmt.Sprintf("%s %g%s", jcshms.JC037, jcshms.JC044, tani.ResolveName(jcshms.JC039))
-	if ja006 != 0 && ja008 != 0 {
-		pkg += fmt.Sprintf(" (%g%s×%g%s)", ja006, tani.ResolveName(jcshms.JC039), ja008, tani.ResolveName(ja007Str))
+	ayjunitnm := tani.ResolveName(jcshms.JC039)
+	var ajanunitnm string
+	if ja007Str == "0" || ja007Str == "" {
+		ajanunitnm = ayjunitnm
+	} else {
+		ajanunitnm = tani.ResolveName(ja007Str)
 	}
 
+	pkg := fmt.Sprintf("%s %g%s", jcshms.JC037, jcshms.JC044, ayjunitnm)
+	if ja006 != 0 && ja008 != 0 {
+		pkg += fmt.Sprintf(" (%g%s×%g%s)", ja006, ayjunitnm, ja008, ajanunitnm)
+	}
+
+	// ここの計算式はJA006を使うので正しいままです
 	janQty := 0.0
 	if jcshms.JA006.Valid && ja006 != 0 {
 		janQty = pu.YjQty / ja006
@@ -239,11 +246,11 @@ func createARInputFromJcshms(pu model.ParsedUsage, yj string, jcshms *db.JCShms,
 		Amaker:             jcshms.JC030,
 		Ajanqty:            janQty,
 		Ajpu:               ja008,
-		Ajanunitnm:         tani.ResolveName(ja007Str),
+		Ajanunitnm:         ajanunitnm,
 		Ajanunitcode:       ja007Str,
 		Ayjqty:             pu.YjQty,
 		Ayjpu:              jcshms.JC044,
-		Ayjunitnm:          tani.ResolveName(jcshms.JC039),
+		Ayjunitnm:          ayjunitnm,
 		Adokuyaku:          jcshms.JC061,
 		Agekiyaku:          jcshms.JC062,
 		Amayaku:            jcshms.JC063,
@@ -251,6 +258,5 @@ func createARInputFromJcshms(pu model.ParsedUsage, yj string, jcshms *db.JCShms,
 		Akakuseizai:        jcshms.JC065,
 		Akakuseizaigenryou: jcshms.JC066,
 		Ama:                ama,
-		Alnum:              "",
 	}, nil
 }

@@ -24,9 +24,9 @@ func ExecuteDatBranching(conn *sql.DB, prec model.ARInput) (model.ARInput, error
 	}
 	if master != nil {
 		if prec.Ajc == "0000000000000" {
-			return processDatBranch1(prec, master) // mrdat1
+			return processDatBranch1(prec, master)
 		}
-		return processDatBranch3(prec, master) // mrdat3
+		return processDatBranch3(prec, master)
 	}
 
 	jcshms, err := db.GetJcshmsByJan(conn, prec.Ajc)
@@ -35,15 +35,15 @@ func ExecuteDatBranching(conn *sql.DB, prec model.ARInput) (model.ARInput, error
 	}
 	if jcshms != nil {
 		if jcshms.JC009 != "" {
-			return processDatBranch4(conn, prec, jcshms) // mrdat4
+			return processDatBranch4(conn, prec, jcshms)
 		}
-		return processDatBranch5(conn, prec, jcshms) // mrdat5
+		return processDatBranch5(conn, prec, jcshms)
 	}
 
 	if prec.Ajc == "0000000000000" {
-		return processDatBranch2(conn, prec) // mrdat2
+		return processDatBranch2(conn, prec)
 	}
-	return processDatBranch6(conn, prec) // mrdat6
+	return processDatBranch6(conn, prec)
 }
 
 // --- Helper Functions for Each Branch ---
@@ -51,7 +51,10 @@ func ExecuteDatBranching(conn *sql.DB, prec model.ARInput) (model.ARInput, error
 // mrdat1: No JAN, ma_master exists
 func processDatBranch1(prec model.ARInput, master *model.MaMaster) (model.ARInput, error) {
 	prec.Ayj = master.MA009
+	prec.Apname = master.MA018 // <-- Fix: Add product name
 	prec.Ama = "1"
+	prec.Apkg = fmt.Sprintf("%s %g%s", master.MA037, master.MA044, tani.ResolveName(master.MA039))
+	prec.Amaker = master.MA030
 	return prec, nil
 }
 
@@ -75,32 +78,32 @@ func processDatBranch2(conn *sql.DB, prec model.ARInput) (model.ARInput, error) 
 // mrdat3: JAN exists, ma_master exists
 func processDatBranch3(prec model.ARInput, master *model.MaMaster) (model.ARInput, error) {
 	prec.Ayj = master.MA009
+	prec.Apname = master.MA018 // <-- Fix: Add product name
 	prec.Akana = master.MA022
-	pkg := fmt.Sprintf("%s %g%s", master.MA037, master.MA044, tani.ResolveName(master.MA039))
-	if master.MA131 != 0 && master.MA133 != 0 {
-		pkg += fmt.Sprintf(" (%g%s×%g%s)",
-			master.MA131, tani.ResolveName(master.MA039),
-			master.MA133, tani.ResolveName(strconv.Itoa(master.MA132)))
-	}
-	prec.Apkg = pkg
 	prec.Amaker = master.MA030
+	prec.Ayjpu = master.MA044
+	prec.Ajpu = master.MA133
+	prec.Ayjunitnm = tani.ResolveName(master.MA039)
+	prec.Ajanqty = prec.Adatqty * master.MA133
+	prec.Ayjqty = prec.Adatqty * prec.Ayjpu
 
-	// vvv 単位名のフォールバックロジックを追加 vvv
-	ayjunitnm := tani.ResolveName(master.MA039)
 	ajanunitcode := strconv.Itoa(master.MA132)
 	var ajanunitnm string
 	if ajanunitcode == "0" {
-		ajanunitnm = ayjunitnm
+		ajanunitnm = prec.Ayjunitnm
 	} else {
 		ajanunitnm = tani.ResolveName(ajanunitcode)
 	}
-	// ^^^ ここまで ^^^
-
-	prec.Ajanqty = prec.Adatqty * master.MA133
-	prec.Ajpu = master.MA133
 	prec.Ajanunitcode = ajanunitcode
 	prec.Ajanunitnm = ajanunitnm
-	prec.Ayjunitnm = ayjunitnm
+
+	pkg := fmt.Sprintf("%s %g%s", master.MA037, master.MA044, prec.Ayjunitnm)
+	if master.MA131 != 0 && master.MA133 != 0 {
+		pkg += fmt.Sprintf(" (%g%s×%g%s)",
+			master.MA131, prec.Ayjunitnm,
+			master.MA133, ajanunitnm)
+	}
+	prec.Apkg = pkg
 
 	prec.Ama = "3"
 	return prec, nil
@@ -124,34 +127,34 @@ func processDatBranch4(conn *sql.DB, prec model.ARInput, jcshms *db.JCShms) (mod
 	}
 
 	prec.Ayj = jcshms.JC009
+	prec.Apname = jcshms.JC018 // <-- Fix: Add product name
 	prec.Akana = jcshms.JC022
-	pkg := fmt.Sprintf("%s %g%s", jcshms.JC037, jcshms.JC044, tani.ResolveName(jcshms.JC039))
-	if jcshms.JA006.Valid && jcshms.JA008.Valid {
-		pkg += fmt.Sprintf(" (%g%s×%g%s)",
-			jcshms.JA006.Float64, tani.ResolveName(jcshms.JC039),
-			jcshms.JA008.Float64, tani.ResolveName(jcshms.JA007.String))
-	}
-	prec.Apkg = pkg
 	prec.Amaker = jcshms.JC030
-
-	// vvv 単位名のフォールバックロジックを追加 vvv
-	ayjunitnm := tani.ResolveName(jcshms.JC039)
-	ajanunitcode := jcshms.JA007.String
-	var ajanunitnm string
-	if ajanunitcode == "0" || ajanunitcode == "" {
-		ajanunitnm = ayjunitnm
-	} else {
-		ajanunitnm = tani.ResolveName(ajanunitcode)
-	}
-	// ^^^ ここまで ^^^
-
+	prec.Ayjpu = jcshms.JC044
+	prec.Ajpu = jcshms.JA008.Float64
+	prec.Ayjunitnm = tani.ResolveName(jcshms.JC039)
 	if jcshms.JA008.Valid {
 		prec.Ajanqty = prec.Adatqty * jcshms.JA008.Float64
 	}
-	prec.Ajpu = jcshms.JA008.Float64
+	prec.Ayjqty = prec.Adatqty * prec.Ayjpu
+
+	ajanunitcode := jcshms.JA007.String
+	var ajanunitnm string
+	if ajanunitcode == "0" || ajanunitcode == "" {
+		ajanunitnm = prec.Ayjunitnm
+	} else {
+		ajanunitnm = tani.ResolveName(ajanunitcode)
+	}
 	prec.Ajanunitcode = ajanunitcode
 	prec.Ajanunitnm = ajanunitnm
-	prec.Ayjunitnm = ayjunitnm
+
+	pkg := fmt.Sprintf("%s %g%s", jcshms.JC037, jcshms.JC044, prec.Ayjunitnm)
+	if jcshms.JA006.Valid && jcshms.JA008.Valid {
+		pkg += fmt.Sprintf(" (%g%s×%g%s)",
+			jcshms.JA006.Float64, prec.Ayjunitnm,
+			jcshms.JA008.Float64, ajanunitnm)
+	}
+	prec.Apkg = pkg
 
 	prec.Ama = "4"
 	return prec, nil
@@ -164,34 +167,34 @@ func processDatBranch5(conn *sql.DB, prec model.ARInput, jcshms *db.JCShms) (mod
 		return model.ARInput{}, err
 	}
 	prec.Ayj = newYj
+	prec.Apname = jcshms.JC018 // <-- Fix: Add product name
 	prec.Akana = jcshms.JC022
-	pkg := fmt.Sprintf("%s %g%s", jcshms.JC037, jcshms.JC044, tani.ResolveName(jcshms.JC039))
-	if jcshms.JA006.Valid && jcshms.JA008.Valid {
-		pkg += fmt.Sprintf(" (%g%s×%g%s)",
-			jcshms.JA006.Float64, tani.ResolveName(jcshms.JC039),
-			jcshms.JA008.Float64, tani.ResolveName(jcshms.JA007.String))
-	}
-	prec.Apkg = pkg
 	prec.Amaker = jcshms.JC030
-
-	// vvv 単位名のフォールバックロジックを追加 vvv
-	ayjunitnm := tani.ResolveName(jcshms.JC039)
-	ajanunitcode := jcshms.JA007.String
-	var ajanunitnm string
-	if ajanunitcode == "0" || ajanunitcode == "" {
-		ajanunitnm = ayjunitnm
-	} else {
-		ajanunitnm = tani.ResolveName(ajanunitcode)
-	}
-	// ^^^ ここまで ^^^
-
+	prec.Ayjpu = jcshms.JC044
+	prec.Ajpu = jcshms.JA008.Float64
+	prec.Ayjunitnm = tani.ResolveName(jcshms.JC039)
 	if jcshms.JA008.Valid {
 		prec.Ajanqty = prec.Adatqty * jcshms.JA008.Float64
 	}
-	prec.Ajpu = jcshms.JA008.Float64
+	prec.Ayjqty = prec.Adatqty * prec.Ayjpu
+
+	ajanunitcode := jcshms.JA007.String
+	var ajanunitnm string
+	if ajanunitcode == "0" || ajanunitcode == "" {
+		ajanunitnm = prec.Ayjunitnm
+	} else {
+		ajanunitnm = tani.ResolveName(ajanunitcode)
+	}
 	prec.Ajanunitcode = ajanunitcode
 	prec.Ajanunitnm = ajanunitnm
-	prec.Ayjunitnm = ayjunitnm
+
+	pkg := fmt.Sprintf("%s %g%s", jcshms.JC037, jcshms.JC044, prec.Ayjunitnm)
+	if jcshms.JA006.Valid && jcshms.JA008.Valid {
+		pkg += fmt.Sprintf(" (%g%s×%g%s)",
+			jcshms.JA006.Float64, prec.Ayjunitnm,
+			jcshms.JA008.Float64, ajanunitnm)
+	}
+	prec.Apkg = pkg
 
 	masterInput := model.MaMasterInput{
 		MA000: prec.Ajc, MA009: prec.Ayj, MA018: jcshms.JC018, MA022: jcshms.JC022, MA030: jcshms.JC030,
@@ -497,6 +500,60 @@ SELECT 1
 }
 
 
+----- C:\Dev\KARASHI\db\inventory.go -----
+// File: db/inventory.go
+package db
+
+import (
+	"database/sql"
+	"fmt"
+	"karashi/model"
+)
+
+// PersistInventoryRecordsは、棚卸レコードのリストをDBに保存します。
+func PersistInventoryRecords(conn *sql.DB, records []model.ARInput) error {
+	tx, err := conn.Begin()
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// 同じ日付の古い棚卸データを一旦削除
+	if len(records) > 0 {
+		date := records[0].Adate
+		if _, err := tx.Exec("DELETE FROM inventory WHERE inv_date = ?", date); err != nil {
+			return fmt.Errorf("failed to delete old inventory data: %w", err)
+		}
+	}
+
+	const q = `
+INSERT OR IGNORE INTO inventory (
+  inv_date, inv_jan_code, inv_yj_code, inv_product_name, inv_quantity
+) VALUES (?, ?, ?, ?, ?)`
+
+	stmt, err := tx.Prepare(q)
+	if err != nil {
+		return fmt.Errorf("failed to prepare statement: %w", err)
+	}
+	defer stmt.Close()
+
+	for _, rec := range records {
+		_, err := stmt.Exec(
+			rec.Adate,
+			rec.Ajc,
+			rec.Ayj,
+			rec.Apname,
+			rec.Ajanqty, // 在庫数は Ajanqty を使う
+		)
+		if err != nil {
+			return fmt.Errorf("failed to exec statement for inventory (JAN: %s): %w", rec.Ajc, err)
+		}
+	}
+
+	return tx.Commit()
+}
+
+
 ----- C:\Dev\KARASHI\db\jcshms.go -----
 // File: db/jcshms.go
 package db
@@ -696,6 +753,355 @@ SELECT 1
 		return false, err
 	}
 	return true, nil
+}
+
+
+----- C:\Dev\KARASHI\inventory\branch.go -----
+// File: inventory/branch.go
+package inventory
+
+import (
+	"database/sql"
+	"fmt"
+	"karashi/db"
+	"karashi/model"
+	"karashi/tani"
+	"strconv"
+)
+
+// ExecuteInventoryBranchingは、棚卸レコードを正しい分岐ロジックで処理します。
+func ExecuteInventoryBranching(conn *sql.DB, rec model.ARInput) (model.ARInput, error) {
+	// --- ケース1: JANコードが存在する場合 ---
+	if rec.Ajc != "" {
+		master, err := db.GetMaMasterByCode(conn, rec.Ajc)
+		if err != nil {
+			return model.ARInput{}, err
+		}
+		if master != nil {
+			return processInvBranch1(rec, master)
+		}
+
+		jcshms, err := db.GetJcshmsByJan(conn, rec.Ajc)
+		if err != nil {
+			return model.ARInput{}, err
+		}
+		if jcshms != nil {
+			if jcshms.JC009 != "" {
+				return processInvBranch2(conn, rec, jcshms) // Branch 2
+			}
+			return processInvBranch3(conn, rec, jcshms) // Branch 3
+		}
+
+		return processInvBranch4(conn, rec) // Branch 4
+	}
+
+	// --- ケース2: JANコードが無く、YJコードが存在する場合 ---
+	if rec.Ayj != "" {
+		return processInvBranch5(conn, rec) // Branch 5
+	}
+
+	return rec, nil
+}
+
+// --- 各分岐のヘルパー関数 ---
+
+// Branch 1: JANあり, ma_masterあり
+func processInvBranch1(rec model.ARInput, master *model.MaMaster) (model.ARInput, error) {
+	rec.Ayj = master.MA009
+	rec.Apname = master.MA018
+	rec.Amaker = master.MA030
+	rec.Ayjpu = master.MA044
+	rec.Ajpu = master.MA133
+
+	// vvv 包装文字列と単位名のロジックを追加 vvv
+	ayjunitnm := tani.ResolveName(master.MA039)
+	ajanunitcode := strconv.Itoa(master.MA132)
+	var ajanunitnm string
+	if ajanunitcode == "0" {
+		ajanunitnm = ayjunitnm
+	} else {
+		ajanunitnm = tani.ResolveName(ajanunitcode)
+	}
+	rec.Ajanunitnm = ajanunitnm
+	rec.Ayjunitnm = ayjunitnm
+
+	pkg := fmt.Sprintf("%s %g%s", master.MA037, master.MA044, ayjunitnm)
+	if master.MA131 != 0 && master.MA133 != 0 {
+		pkg += fmt.Sprintf(" (%g%s×%g%s)", master.MA131, ayjunitnm, master.MA133, ajanunitnm)
+	}
+	rec.Apkg = pkg
+	// ^^^ ここまで ^^^
+
+	return rec, nil
+}
+
+// Branch 2: JANあり, ma_masterなし, JCSHMSあり (YJあり)
+func processInvBranch2(conn *sql.DB, rec model.ARInput, jcshms *db.JCShms) (model.ARInput, error) {
+	rec.Ayj = jcshms.JC009
+	rec.Apname = jcshms.JC018
+	rec.Amaker = jcshms.JC030
+	rec.Ayjpu = jcshms.JC044
+	rec.Ajpu = jcshms.JA008.Float64
+
+	// vvv 包装文字列と単位名のロジックを追加 vvv
+	ayjunitnm := tani.ResolveName(jcshms.JC039)
+	ajanunitcode := jcshms.JA007.String
+	var ajanunitnm string
+	if ajanunitcode == "0" || ajanunitcode == "" {
+		ajanunitnm = ayjunitnm
+	} else {
+		ajanunitnm = tani.ResolveName(ajanunitcode)
+	}
+	rec.Ajanunitnm = ajanunitnm
+	rec.Ayjunitnm = ayjunitnm
+
+	pkg := fmt.Sprintf("%s %g%s", jcshms.JC037, jcshms.JC044, ayjunitnm)
+	if jcshms.JA006.Valid && jcshms.JA008.Valid {
+		pkg += fmt.Sprintf(" (%g%s×%g%s)", jcshms.JA006.Float64, ayjunitnm, jcshms.JA008.Float64, ajanunitnm)
+	}
+	rec.Apkg = pkg
+	// ^^^ ここまで ^^^
+
+	masterInput := model.MaMasterInput{
+		MA000: rec.Ajc, MA009: jcshms.JC009, MA018: jcshms.JC018, MA022: jcshms.JC022, MA030: jcshms.JC030,
+		MA037: jcshms.JC037, MA039: jcshms.JC039, MA044: jcshms.JC044, MA061: jcshms.JC061,
+		MA062: jcshms.JC062, MA063: jcshms.JC063, MA064: jcshms.JC064, MA065: jcshms.JC065,
+		MA066: jcshms.JC066, MA131: jcshms.JA006.Float64, MA133: jcshms.JA008.Float64,
+	}
+	if jcshms.JA007.Valid {
+		if val, err := strconv.Atoi(jcshms.JA007.String); err == nil {
+			masterInput.MA132 = val
+		}
+	}
+	if err := db.CreateMaMaster(conn, masterInput); err != nil {
+		return model.ARInput{}, err
+	}
+	return rec, nil
+}
+
+// Branch 3: JANあり, ma_masterなし, JCSHMSあり (YJなし)
+func processInvBranch3(conn *sql.DB, rec model.ARInput, jcshms *db.JCShms) (model.ARInput, error) {
+	newYj, err := db.NextSequence(conn, "MA2Y")
+	if err != nil {
+		return model.ARInput{}, err
+	}
+	rec.Ayj = newYj
+	rec.Apname = jcshms.JC018
+	rec.Amaker = jcshms.JC030
+	rec.Ayjpu = jcshms.JC044
+	rec.Ajpu = jcshms.JA008.Float64
+
+	// vvv 包装文字列と単位名のロジックを追加 vvv
+	ayjunitnm := tani.ResolveName(jcshms.JC039)
+	ajanunitcode := jcshms.JA007.String
+	var ajanunitnm string
+	if ajanunitcode == "0" || ajanunitcode == "" {
+		ajanunitnm = ayjunitnm
+	} else {
+		ajanunitnm = tani.ResolveName(ajanunitcode)
+	}
+	rec.Ajanunitnm = ajanunitnm
+	rec.Ayjunitnm = ayjunitnm
+
+	pkg := fmt.Sprintf("%s %g%s", jcshms.JC037, jcshms.JC044, ayjunitnm)
+	if jcshms.JA006.Valid && jcshms.JA008.Valid {
+		pkg += fmt.Sprintf(" (%g%s×%g%s)", jcshms.JA006.Float64, ayjunitnm, jcshms.JA008.Float64, ajanunitnm)
+	}
+	rec.Apkg = pkg
+	// ^^^ ここまで ^^^
+
+	masterInput := model.MaMasterInput{
+		MA000: rec.Ajc, MA009: newYj, MA018: jcshms.JC018, MA022: jcshms.JC022, MA030: jcshms.JC030,
+		MA037: jcshms.JC037, MA039: jcshms.JC039, MA044: jcshms.JC044, MA061: jcshms.JC061,
+		MA062: jcshms.JC062, MA063: jcshms.JC063, MA064: jcshms.JC064, MA065: jcshms.JC065,
+		MA066: jcshms.JC066, MA131: jcshms.JA006.Float64, MA133: jcshms.JA008.Float64,
+	}
+	if jcshms.JA007.Valid {
+		if val, err := strconv.Atoi(jcshms.JA007.String); err == nil {
+			masterInput.MA132 = val
+		}
+	}
+	if err := db.CreateMaMaster(conn, masterInput); err != nil {
+		return model.ARInput{}, err
+	}
+	return rec, nil
+}
+
+// Branch 4: JANあり, どのマスターにもない
+func processInvBranch4(conn *sql.DB, rec model.ARInput) (model.ARInput, error) {
+	newYj, err := db.NextSequence(conn, "MA2Y")
+	if err != nil {
+		return model.ARInput{}, err
+	}
+	rec.Ayj = newYj
+
+	masterInput := model.MaMasterInput{MA000: rec.Ajc, MA009: newYj, MA018: rec.Apname}
+	if err := db.CreateMaMaster(conn, masterInput); err != nil {
+		return model.ARInput{}, err
+	}
+	return rec, nil
+}
+
+// Branch 5: JANなし, YJあり
+func processInvBranch5(conn *sql.DB, rec model.ARInput) (model.ARInput, error) {
+	newJan := fmt.Sprintf("9999999999999%s", rec.Apname)
+	rec.Ajc = newJan
+
+	existingMaster, err := db.GetMaMasterByCode(conn, newJan)
+	if err != nil {
+		return model.ARInput{}, err
+	}
+	if existingMaster != nil {
+		rec.Apname = existingMaster.MA018
+		rec.Apkg = fmt.Sprintf("%s %g%s", existingMaster.MA037, existingMaster.MA044, tani.ResolveName(existingMaster.MA039))
+		rec.Amaker = existingMaster.MA030
+		rec.Ayjpu = existingMaster.MA044
+		rec.Ajpu = existingMaster.MA133
+		return rec, nil
+	}
+
+	masterInput := model.MaMasterInput{MA000: newJan, MA009: rec.Ayj, MA018: rec.Apname}
+	if err := db.CreateMaMaster(conn, masterInput); err != nil {
+		return model.ARInput{}, err
+	}
+	return rec, nil
+}
+
+
+----- C:\Dev\KARASHI\inventory\handler.go -----
+// File: inventory/handler.go
+package inventory
+
+import (
+	"database/sql"
+	"encoding/json"
+	"karashi/db"
+	"karashi/model"
+	"log"
+	"net/http"
+)
+
+func UploadInventoryHandler(conn *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		file, _, err := r.FormFile("file")
+		if err != nil {
+			http.Error(w, "File upload error", http.StatusBadRequest)
+			return
+		}
+		defer file.Close()
+
+		parsedRecords, err := ParseInventory(file)
+		if err != nil {
+			http.Error(w, "Inventory CSV parse error", http.StatusInternalServerError)
+			log.Printf("inventory.ParseInventory error: %v", err)
+			return
+		}
+
+		var finalRecords []model.ARInput
+		for _, rec := range parsedRecords {
+			processedRec, err := ExecuteInventoryBranching(conn, rec)
+			if err != nil {
+				log.Printf("ExecuteInventoryBranching failed for JAN %s: %v", rec.Ajc, err)
+				continue
+			}
+			finalRecords = append(finalRecords, processedRec)
+		}
+
+		// Save the processed data to the inventory and a_records tables
+		if err := db.PersistInventoryRecords(conn, finalRecords); err != nil {
+			log.Printf("PersistInventoryRecords error: %v", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		if err := db.PersistARecords(conn, finalRecords); err != nil {
+			log.Printf("PersistARecords error: %v", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"message": "Processed and saved Inventory CSV successfully",
+			"records": finalRecords,
+		})
+	}
+}
+
+
+----- C:\Dev\KARASHI\inventory\parser.go -----
+// File: inventory/parser.go
+package inventory
+
+import (
+	"encoding/csv"
+	"fmt"
+	"io"
+	"karashi/model"
+	"strconv"
+	"strings"
+
+	"golang.org/x/text/encoding/japanese"
+	"golang.org/x/text/transform"
+)
+
+func ParseInventory(r io.Reader) ([]model.ARInput, error) {
+	reader := csv.NewReader(transform.NewReader(r, japanese.ShiftJIS.NewDecoder()))
+	reader.FieldsPerRecord = -1
+
+	headerRow, err := reader.Read()
+	if err != nil {
+		return nil, fmt.Errorf("failed to read header row: %w", err)
+	}
+	date := ""
+	if len(headerRow) > 4 {
+		date = strings.Trim(headerRow[4], `"' `)
+	}
+
+	if _, err := reader.Read(); err != nil && err != io.EOF {
+		// Skip second row
+	}
+
+	var records []model.ARInput
+	for {
+		row, err := reader.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			continue
+		}
+		if len(row) < 46 {
+			continue
+		}
+
+		// 0-indexed columns
+		janQtyStr := strings.Trim(row[21], `"' `)
+		coeffStr := strings.Trim(row[17], `"' `)
+
+		janQty, _ := strconv.ParseFloat(janQtyStr, 64)
+		coeff, _ := strconv.ParseFloat(coeffStr, 64)
+
+		yjQty := janQty * coeff // Calculate YJ Quantity
+
+		rec := model.ARInput{
+			Adate:      date,
+			Aflag:      4, // vvv 「種別」に4をセット vvv
+			Apname:     strings.Trim(row[12], `"' `),
+			Ajanqty:    janQty,
+			Ajpu:       coeff,
+			Ajanunitnm: strings.Trim(row[23], `"' `),
+			Ayjqty:     yjQty,
+			Ayjunitnm:  strings.Trim(row[16], `"' `),
+			Ayj:        strings.Trim(row[42], `"' `),
+			Ajc:        strings.Trim(row[45], `"' `),
+		}
+		records = append(records, rec)
+	}
+	return records, nil
 }
 
 
@@ -1137,6 +1543,92 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 });
 
+----- C:\Dev\KARASHI\static\js\inventory.js -----
+// File: static/js/inventory.js
+document.addEventListener("DOMContentLoaded", () => {
+  const btn = document.getElementById("inventoryBtn");
+  const input = document.getElementById("inventoryInput");
+  const debug = document.getElementById("debug");
+  const table = document.getElementById("outputTable");
+  const thead = table.querySelector("thead");
+  const tbody = table.querySelector("tbody");
+
+  btn.addEventListener("click", () => {
+    input.value = null;
+    input.click();
+  });
+
+  input.addEventListener("change", async () => {
+    if (!input.files.length) return;
+    debug.textContent = "棚卸CSVファイルをアップロード中…";
+
+    const form = new FormData();
+    form.append("file", input.files[0]);
+
+    try {
+      const res = await fetch("/uploadInventory", { method: "POST", body: form });
+      if (!res.ok) {
+        debug.textContent = `アップロード失敗: ${res.status}`;
+        return;
+      }
+
+      const data = await res.json();
+      const records = Array.isArray(data.records) ? data.records : [];
+      debug.textContent = `処理件数: ${records.length}`;
+      
+      // Restore the full 24-column header
+      thead.innerHTML = `
+        <tr>
+          <th>日付</th><th>種別</th><th>YJ</th><th>JAN</th><th>製品名</th>
+          <th>包装</th><th>メーカー</th><th class="num">個数</th>
+          <th class="num">JAN数量</th><th class="num">JAN包装数量</th><th>JAN単位</th>
+          <th class="num">YJ数量</th><th class="num">YJ包装数量</th><th>YJ単位</th>
+          <th class="num">単価</th><th class="num">金額</th><th class="num">税額</th>
+          <th class="num">税率</th><th>期限</th><th>ロット</th><th>得意先</th>
+          <th>伝票番号</th><th class="num">行</th><th>MA</th>
+        </tr>`;
+      tbody.innerHTML = "";
+
+      // Render data into the full 24-column layout
+records.forEach(rec => {
+        const tr = document.createElement("tr");
+        tr.classList.add("modified");
+        tr.innerHTML = `
+          <td>${rec.Adate || ""}</td>
+          <td>${rec.Aflag || ""}</td>
+          <td>${rec.Ayj || ""}</td>
+          <td>${rec.Ajc || ""}</td>
+          <td>${rec.Apname || ""}</td>
+          <td>${rec.Apkg || ""}</td>
+          <td>${rec.Amaker || ""}</td>
+          <td class="num">${rec.Adatqty != null ? rec.Adatqty : ""}</td>
+          <td class="num">${rec.Ajanqty != null ? rec.Ajanqty : "0"}</td>
+          <td class="num">${rec.Ajpu != null ? rec.Ajpu : ""}</td>
+          <td>${rec.Ajanunitnm || ""}</td>
+          <td class="num">${rec.Ayjqty != null ? rec.Ayjqty : "0"}</td>
+          <td class="num">${rec.Ayjpu != null ? rec.Ayjpu : ""}</td>
+          <td>${rec.Ayjunitnm || ""}</td>
+          <td class="num">${rec.Aunitprice != null ? rec.Aunitprice : ""}</td>
+          <td class="num">${rec.Asubtotal != null ? rec.Asubtotal : ""}</td>
+          <td class="num">${rec.Ataxamount != null ? rec.Ataxamount : ""}</td>
+          <td class="num">${rec.Ataxrate || ""}</td>
+          <td>${rec.Aexpdate || ""}</td>
+          <td>${rec.Alot || ""}</td>
+          <td>${rec.Apcode || ""}</td>
+          <td>${rec.Arpnum || ""}</td>
+          <td class="num">${rec.Alnum || ""}</td>
+          <td>${String(rec.Ama).trim() || ""}</td>
+        `;
+        tbody.appendChild(tr);
+      });
+
+    } catch (err) {
+      console.error(err);
+      debug.textContent = "棚卸アップロードエラー: " + err.message;
+    }
+  });
+});
+
 ----- C:\Dev\KARASHI\static\js\usage.js -----
 // File: static/js/usage.js
 
@@ -1237,7 +1729,6 @@ document.addEventListener("DOMContentLoaded", () => {
 });
 
 ----- C:\Dev\KARASHI\static\index.html -----
-<!-- File: static/index.html -->
 <!DOCTYPE html>
 <html lang="ja">
 <head>
@@ -1260,15 +1751,12 @@ document.addEventListener("DOMContentLoaded", () => {
     </nav>
   </header>
 
-  <!-- ファイル選択ボタン（非表示） -->
   <input type="file" id="datInput" multiple style="display:none" />
   <input type="file" id="usageInput" multiple style="display:none" />
-
-  <!-- デバッグメッセージ欄 -->
+  <input type="file" id="inventoryInput" style="display:none" />
   <pre id="debug"></pre>
 
-  <!-- データテーブル -->
-    <table id="outputTable">
+  <table id="outputTable">
     <colgroup>
       <col><col><col><col><col><col><col><col><col><col>
       <col><col><col><col><col><col><col><col><col><col>
@@ -1289,9 +1777,9 @@ document.addEventListener("DOMContentLoaded", () => {
       </tbody>
   </table>
 
-  <!-- スクリプト読み込み -->
   <script src="/static/js/dat.js"></script>
   <script src="/static/js/usage.js"></script>
+  <script src="/static/js/inventory.js"></script>
   <script>
     // 印刷ボタン動作
     document.getElementById("printBtn")
@@ -1438,24 +1926,26 @@ func ExecuteBranching(conn *sql.DB, pu model.ParsedUsage) (model.ARInput, error)
 
 // processBranch1: Use an existing ma_master record.
 func processBranch1(pu model.ParsedUsage, master *model.MaMaster) (model.ARInput, error) {
-	pkg := fmt.Sprintf("%s %g%s", master.MA037, master.MA044, tani.ResolveName(master.MA039))
-	if master.MA131 != 0 && master.MA133 != 0 {
-		pkg += fmt.Sprintf(" (%g%s×%g)", master.MA131, tani.ResolveName(strconv.Itoa(master.MA132)), master.MA133)
-	}
-
-	janQty := 0.0
-	if master.MA131 != 0 {
-		janQty = pu.YjQty / master.MA131
-	}
-
-	ajanunitcode := strconv.Itoa(master.MA132)
 	ayjunitnm := tani.ResolveName(master.MA039)
+	ajanunitcode := strconv.Itoa(master.MA132)
 	var ajanunitnm string
 	if ajanunitcode == "0" {
 		ajanunitnm = ayjunitnm
 	} else {
 		ajanunitnm = tani.ResolveName(ajanunitcode)
 	}
+
+	pkg := fmt.Sprintf("%s %g%s", master.MA037, master.MA044, ayjunitnm)
+	if master.MA131 != 0 && master.MA133 != 0 {
+		pkg += fmt.Sprintf(" (%g%s×%g%s)", master.MA131, ayjunitnm, master.MA133, ajanunitnm)
+	}
+
+	// vvv ここが修正箇所 vvv
+	janQty := 0.0
+	if master.MA131 != 0 { // MA133 から MA131 に変更
+		janQty = pu.YjQty / master.MA131
+	}
+	// ^^^ ここまで ^^^
 
 	return model.ARInput{
 		Adate:              pu.Date,
@@ -1468,11 +1958,11 @@ func processBranch1(pu model.ParsedUsage, master *model.MaMaster) (model.ARInput
 		Amaker:             master.MA030,
 		Ajanqty:            janQty,
 		Ajpu:               master.MA133,
-		Ajanunitnm:         ajanunitnm, // 新しく作成した`ajanunitnm`変数をここで使用します
-		Ajanunitcode:       strconv.Itoa(master.MA132),
+		Ajanunitnm:         ajanunitnm,
+		Ajanunitcode:       ajanunitcode,
 		Ayjqty:             pu.YjQty,
 		Ayjpu:              master.MA044,
-		Ayjunitnm:          tani.ResolveName(master.MA039),
+		Ayjunitnm:          ayjunitnm,
 		Adokuyaku:          master.MA061,
 		Agekiyaku:          master.MA062,
 		Amayaku:            master.MA063,
@@ -1480,7 +1970,6 @@ func processBranch1(pu model.ParsedUsage, master *model.MaMaster) (model.ARInput
 		Akakuseizai:        master.MA065,
 		Akakuseizaigenryou: master.MA066,
 		Ama:                Ama1,
-		Alnum:              "",
 	}, nil
 }
 
@@ -1511,7 +2000,6 @@ func processBranch2(conn *sql.DB, pu model.ParsedUsage) (model.ARInput, error) {
 		Ayjqty:    pu.YjQty,
 		Ayjunitnm: pu.YjUnitName,
 		Ama:       Ama2,
-		Alnum:     "",
 	}, nil
 }
 
@@ -1561,7 +2049,6 @@ func processBranch6(conn *sql.DB, pu model.ParsedUsage) (model.ARInput, error) {
 		Ayjqty:    pu.YjQty,
 		Ayjunitnm: pu.YjUnitName,
 		Ama:       Ama6,
-		Alnum:     "",
 	}, nil
 }
 
@@ -1588,7 +2075,6 @@ func createMasterFromJcshms(conn *sql.DB, jan, yj string, jcshms *db.JCShms) err
 		MA133: jcshms.JA008.Float64,
 	}
 
-	// Convert the string unit code (JA007) to an integer for MA132.
 	if jcshms.JA007.Valid {
 		if val, err := strconv.Atoi(jcshms.JA007.String); err == nil {
 			masterInput.MA132 = val
@@ -1604,11 +2090,20 @@ func createARInputFromJcshms(pu model.ParsedUsage, yj string, jcshms *db.JCShms,
 	ja007Str := jcshms.JA007.String
 	ja008 := jcshms.JA008.Float64
 
-	pkg := fmt.Sprintf("%s %g%s", jcshms.JC037, jcshms.JC044, tani.ResolveName(jcshms.JC039))
-	if ja006 != 0 && ja008 != 0 {
-		pkg += fmt.Sprintf(" (%g%s×%g%s)", ja006, tani.ResolveName(jcshms.JC039), ja008, tani.ResolveName(ja007Str))
+	ayjunitnm := tani.ResolveName(jcshms.JC039)
+	var ajanunitnm string
+	if ja007Str == "0" || ja007Str == "" {
+		ajanunitnm = ayjunitnm
+	} else {
+		ajanunitnm = tani.ResolveName(ja007Str)
 	}
 
+	pkg := fmt.Sprintf("%s %g%s", jcshms.JC037, jcshms.JC044, ayjunitnm)
+	if ja006 != 0 && ja008 != 0 {
+		pkg += fmt.Sprintf(" (%g%s×%g%s)", ja006, ayjunitnm, ja008, ajanunitnm)
+	}
+
+	// ここの計算式はJA006を使うので正しいままです
 	janQty := 0.0
 	if jcshms.JA006.Valid && ja006 != 0 {
 		janQty = pu.YjQty / ja006
@@ -1625,11 +2120,11 @@ func createARInputFromJcshms(pu model.ParsedUsage, yj string, jcshms *db.JCShms,
 		Amaker:             jcshms.JC030,
 		Ajanqty:            janQty,
 		Ajpu:               ja008,
-		Ajanunitnm:         tani.ResolveName(ja007Str),
+		Ajanunitnm:         ajanunitnm,
 		Ajanunitcode:       ja007Str,
 		Ayjqty:             pu.YjQty,
 		Ayjpu:              jcshms.JC044,
-		Ayjunitnm:          tani.ResolveName(jcshms.JC039),
+		Ayjunitnm:          ayjunitnm,
 		Adokuyaku:          jcshms.JC061,
 		Agekiyaku:          jcshms.JC062,
 		Amayaku:            jcshms.JC063,
@@ -1637,7 +2132,6 @@ func createARInputFromJcshms(pu model.ParsedUsage, yj string, jcshms *db.JCShms,
 		Akakuseizai:        jcshms.JC065,
 		Akakuseizaigenryou: jcshms.JC066,
 		Ama:                ama,
-		Alnum:              "",
 	}, nil
 }
 
@@ -1832,6 +2326,7 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 
 	"karashi/dat" // datパッケージをインポート
+	"karashi/inventory"
 	"karashi/loader"
 	"karashi/tani"
 	"karashi/usage"
@@ -1863,7 +2358,8 @@ func main() {
 	// HTTPハンドラを登録
 	mux := http.NewServeMux()
 	mux.Handle("/uploadUsage", usage.UploadUsageHandler(db))
-	mux.Handle("/uploadDat", dat.UploadDatHandler(db)) // ← この行を追加
+	mux.Handle("/uploadDat", dat.UploadDatHandler(db))                   // ← この行を追加
+	mux.Handle("/uploadInventory", inventory.UploadInventoryHandler(db)) // ← この行を追加
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("./static"))))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		http.ServeFile(w, r, "./static/index.html")
@@ -2003,6 +2499,18 @@ CREATE TABLE IF NOT EXISTS a_records (
   -- vvv ここから下が主キーの定義 vvv
   PRIMARY KEY(adate, apcode, arpnum, alnum, aflag, ajc, ayj)
   -- ^^^ ここまでが主キーの定義 ^^^
+);
+
+-- =========================================
+-- 棚卸 (Inventory) テーブル定義
+-- =========================================
+CREATE TABLE IF NOT EXISTS inventory (
+  inv_date         TEXT    NOT NULL,
+  inv_jan_code     TEXT    NOT NULL,
+  inv_yj_code      TEXT,
+  inv_product_name TEXT,
+  inv_quantity     REAL    NOT NULL,
+  PRIMARY KEY (inv_date, inv_jan_code)
 );
 
 -- ソート／フィルタ用インデックス
