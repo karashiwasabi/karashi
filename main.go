@@ -1,111 +1,109 @@
-// File: main.go
+// File: main.go (Corrected)
 package main
 
 import (
-	"context"
 	"database/sql"
-	"flag"
+	"encoding/json"
+	"fmt"
+	"karashi/dat"
+	"karashi/db"
+	"karashi/inout"
+	"karashi/loader"
+	"karashi/transaction" // ★ ADD THIS IMPORT
+	"karashi/units"
+	"karashi/usage"
 	"log"
 	"net/http"
-	"os"
 	"os/exec"
-	"os/signal"
 	"runtime"
-	"syscall"
-	"time"
 
 	_ "github.com/mattn/go-sqlite3"
-
-	"karashi/dat" // datパッケージをインポート
-	"karashi/inventory"
-	"karashi/loader"
-	"karashi/tani"
-	"karashi/usage"
 )
 
 func main() {
-	// コマンドラインフラグを定義
-	port := flag.String("port", "8080", "HTTP port")
-	dbPath := flag.String("db", "yamato.db", "SQLite file path")
-	flag.Parse()
-
-	// データベース接続
-	db, err := sql.Open("sqlite3", *dbPath)
+	conn, err := sql.Open("sqlite3", "yamato.db")
 	if err != nil {
-		log.Fatalf("DB open failed: %v", err)
+		log.Fatalf("db open error: %v", err)
 	}
-	defer db.Close()
+	defer conn.Close()
 
-	// スキーマ適用とマスターデータのロードをまとめて実行
-	if err := loader.InitDatabase(db); err != nil {
+	if err := loader.InitDatabase(conn); err != nil {
 		log.Fatalf("master init failed: %v", err)
 	}
-
-	// 単位マスターの読み込み
-	if _, err := tani.LoadTANIFile("SOU/TANI.CSV"); err != nil {
-		log.Fatalf("tani load failed: %v", err)
+	if _, err := units.LoadTANIFile("SOU/TANI.CSV"); err != nil {
+		log.Fatalf("tani init failed: %v", err)
 	}
+	log.Println("master init complete")
 
-	// HTTPハンドラを登録
 	mux := http.NewServeMux()
-	mux.Handle("/uploadUsage", usage.UploadUsageHandler(db))
-	mux.Handle("/uploadDat", dat.UploadDatHandler(db))                   // ← この行を追加
-	mux.Handle("/uploadInventory", inventory.UploadInventoryHandler(db)) // ← この行を追加
+
+	// --- Register all API handlers ---
+
+	// Client-related handlers
+	mux.HandleFunc("/api/clients", func(w http.ResponseWriter, r *http.Request) {
+		clients, err := db.GetAllClients(conn)
+		if err != nil {
+			http.Error(w, "Failed to get clients", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(clients)
+	})
+
+	// Product search handler
+	mux.HandleFunc("/api/products/search", func(w http.ResponseWriter, r *http.Request) {
+		query := r.URL.Query().Get("q")
+		if len(query) < 2 {
+			http.Error(w, "Query must be at least 2 characters", http.StatusBadRequest)
+			return
+		}
+		results, err := db.SearchJcshmsByName(conn, query)
+		if err != nil {
+			http.Error(w, "Failed to search products", http.StatusInternalServerError)
+			log.Printf("SearchJcshmsByName error: %v", err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(results)
+	})
+
+	// Handlers from dedicated packages
+	mux.Handle("/api/dat/upload", dat.UploadDatHandler(conn))
+	mux.Handle("/api/usage/upload", usage.UploadUsageHandler(conn))
+	mux.Handle("/api/inout/save", inout.SaveInOutHandler(conn))
+
+	// ★★★ USE THE NEW, CLEANED-UP TRANSACTION HANDLERS ★★★
+	mux.HandleFunc("/api/receipts", transaction.GetReceiptsHandler(conn))
+	mux.HandleFunc("/api/transaction/", transaction.GetTransactionHandler(conn))
+	mux.HandleFunc("/api/transaction/delete/", transaction.DeleteTransactionHandler(conn))
+
+	// Static file and root handler
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("./static"))))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		http.ServeFile(w, r, "./static/index.html")
 	})
 
-	// サーバーを起動
-	srv := &http.Server{
-		Addr:         ":" + *port,
-		Handler:      loggingMiddleware(mux),
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
-		IdleTimeout:  60 * time.Second,
+	port := ":8080"
+	go openBrowser("http://localhost" + port)
+	log.Printf("starting on %s", port)
+	if err := http.ListenAndServe(port, mux); err != nil {
+		log.Fatalf("server failed: %v", err)
 	}
-
-	go func() {
-		log.Printf("→ starting on :%s", *port)
-		openBrowser("http://localhost:" + *port)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("listen error: %v", err)
-		}
-	}()
-
-	// グレースフルシャットダウン処理
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
-	<-stop
-	log.Println("⏳ shutting down…")
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := srv.Shutdown(ctx); err != nil {
-		log.Fatalf("shutdown failed: %v", err)
-	}
-	log.Println("✅ server stopped")
 }
 
-// openBrowser は、OSに応じてブラウザを開くヘルパー関数です。
 func openBrowser(url string) {
-	var cmd *exec.Cmd
+	var err error
 	switch runtime.GOOS {
+	case "linux":
+		err = exec.Command("xdg-open", url).Start()
 	case "windows":
-		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
+		err = exec.Command("rundll32", "url.dll,FileProtocolHandler", url).Start()
 	case "darwin":
-		cmd = exec.Command("open", url)
-	default: // linux
-		cmd = exec.Command("xdg-open", url)
+		err = exec.Command("open", url).Start()
+	default:
+		err = fmt.Errorf("unsupported platform")
 	}
-	_ = cmd.Start()
-}
-
-// loggingMiddleware は、リクエストのログを出力するミドルウェアです。
-func loggingMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
-		next.ServeHTTP(w, r)
-		log.Printf("%s %s %s", r.Method, r.URL.Path, time.Since(start))
-	})
+	if err != nil {
+		log.Printf("failed to open browser: %v", err)
+	}
 }

@@ -1,87 +1,39 @@
 // File: static/js/dat.js
-document.addEventListener("DOMContentLoaded", () => {
-  const btn = document.getElementById("datBtn");
-  const input = document.getElementById("datInput");
-  const debug = document.getElementById("debug");
-  const table = document.getElementById("outputTable");
-  const thead = table.querySelector("thead");
-  const tbody = table.querySelector("tbody");
 
-  btn.addEventListener("click", () => {
-    input.value = null;
+import {
+  createUploadTableHTML,
+  renderUploadTableRows
+} from './common_table.js';
+
+export function initDatUpload() {
+  const btn       = document.getElementById('datBtn');
+  const input     = document.getElementById('datFileInput');
+  const container = document.getElementById('upload-output-container');
+
+  container.innerHTML = createUploadTableHTML('upload-output-table');
+
+  btn.addEventListener('click', () => {
+    container.innerHTML = createUploadTableHTML('upload-output-table');
     input.click();
   });
 
-  input.addEventListener("change", async () => {
-    if (!input.files.length) return;
-    debug.textContent = `${input.files.length}件のDATファイルをアップロード中…`;
-
-    let allRecords = [];
-    for (const file of input.files) {
-      const form = new FormData();
-      form.append("file", file);
-
-      try {
-        const res = await fetch("/uploadDat", { method: "POST", body: form });
-        if (!res.ok) {
-          console.error(`Error uploading ${file.name}: ${res.status}`);
-          continue;
-        }
-
-        const data = await res.json();
-        if (Array.isArray(data.records)) {
-          allRecords.push(...data.records);
-        }
-      } catch (err) {
-        console.error(`Error processing ${file.name}:`, err);
-        continue;
-      }
+  input.addEventListener('change', async e => {
+    if (!e.target.files.length) return;
+    const tbody = document.querySelector('#upload-output-table tbody');
+    tbody.innerHTML =
+      `<tr><td colspan="14" style="text-align:center;">アップロード処理中...</td></tr>`;
+    try {
+      const formData = new FormData();
+      for (const f of e.target.files) formData.append('file', f);
+      const res = await fetch('/api/dat/upload', { method: 'POST', body: formData });
+      if (!res.ok) throw new Error(res.status);
+      const data = await res.json();
+      renderUploadTableRows('upload-output-table', data.records);
+    } catch (err) {
+      tbody.innerHTML =
+        `<tr><td colspan="14" style="color:red; text-align:center;">
+           処理失敗: ${err.message}
+         </td></tr>`;
     }
-
-    debug.textContent = `合計処理件数: ${allRecords.length}`;
-    
-    thead.innerHTML = `
-      <tr>
-        <th>日付</th><th>種別</th><th>YJ</th><th>JAN</th><th>製品名</th>
-        <th>包装</th><th>メーカー</th><th class="num">個数</th>
-        <th class="num">JAN数量</th><th class="num">JAN包装数量</th><th>JAN単位</th>
-        <th class="num">YJ数量</th><th class="num">YJ包装数量</th><th>YJ単位</th>
-        <th class="num">単価</th><th class="num">金額</th><th class="num">税額</th>
-        <th class="num">税率</th><th>期限</th><th>ロット</th><th>得意先</th>
-        <th>伝票番号</th><th class="num">行</th><th>MA</th>
-      </tr>`;
-    tbody.innerHTML = "";
-
-    allRecords.forEach(rec => {
-      const tr = document.createElement("tr");
-      tr.classList.add("modified");
-      tr.innerHTML = `
-        <td>${rec.Adate || ""}</td>
-        <td>${rec.Aflag || ""}</td>
-        <td>${rec.Ayj || ""}</td>
-        <td>${rec.Ajc || ""}</td>
-        <td>${rec.Apname || ""}</td>
-        <td>${rec.Apkg || ""}</td>
-        <td>${rec.Amaker || ""}</td>
-        <td class="num">${rec.Adatqty || ""}</td>
-        <td class="num">${rec.Ajanqty || ""}</td>
-        <td class="num">${rec.Ajpu || ""}</td>
-        <td>${rec.Ajanunitnm || ""}</td>
-        <td class="num">${rec.Ayjqty || ""}</td>
-        <td class="num">${rec.Ayjpu || ""}</td>
-        <td>${rec.Ayjunitnm || ""}</td>
-        <td class="num">${rec.Aunitprice || ""}</td>
-        <td class="num">${rec.Asubtotal || ""}</td>
-        <td class="num">${rec.Ataxamount || ""}</td>
-        <td class="num">${rec.Ataxrate || ""}</td>
-        <td>${rec.Aexpdate || ""}</td>
-        <td>${rec.Alot || ""}</td>
-        <td>${rec.Apcode || ""}</td>
-        <td>${rec.Arpnum || ""}</td>
-        <td class="num">${rec.Alnum || ""}</td>
-        <td>${String(rec.Ama).trim() || ""}</td>
-      `;
-      tbody.appendChild(tr);
-    });
   });
-});
+}

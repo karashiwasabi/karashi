@@ -4,11 +4,11 @@ package dat
 import (
 	"database/sql"
 	"encoding/json"
+	"karashi/central"
 	"karashi/db"
 	"karashi/model"
 	"log"
 	"net/http"
-	"strconv"
 )
 
 func UploadDatHandler(conn *sql.DB) http.HandlerFunc {
@@ -17,66 +17,63 @@ func UploadDatHandler(conn *sql.DB) http.HandlerFunc {
 			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		file, _, err := r.FormFile("file")
-		if err != nil {
-			http.Error(w, "File upload error", http.StatusBadRequest)
+		if err := r.ParseMultipartForm(32 << 20); err != nil {
+			http.Error(w, "File upload error: "+err.Error(), http.StatusBadRequest)
 			return
 		}
-		defer file.Close()
+		defer r.MultipartForm.RemoveAll()
 
-		parsedRecords, err := ParseDat(file)
-		if err != nil {
-			http.Error(w, "DAT parse error", http.StatusInternalServerError)
-			log.Printf("dat.ParseDat error: %v", err)
-			return
-		}
-
-		var finalRecords []model.ARInput
-		for _, rec := range parsedRecords {
-			// 1. Convert ParsedDat to the common ARInput struct
-			datqty, _ := strconv.ParseFloat(rec.Quantity, 64)
-			unitprice, _ := strconv.ParseFloat(rec.UnitPrice, 64)
-			subtotal, _ := strconv.ParseFloat(rec.Subtotal, 64)
-			expdate, _ := strconv.ParseFloat(rec.ExpiryDate, 64)
-			flag, _ := strconv.Atoi(rec.DeliveryFlag)
-
-			ar := model.ARInput{
-				Adate:      rec.DatDate,
-				Apcode:     rec.WholesaleCode,
-				Arpnum:     rec.ReceiptNumber,
-				Alnum:      rec.LineNumber,
-				Aflag:      flag,
-				Ajc:        rec.JanCode,
-				Apname:     rec.ProductName,
-				Adatqty:    datqty,
-				Aunitprice: unitprice,
-				Asubtotal:  subtotal,
-				Aexpdate:   expdate,
-				Alot:       rec.LotNumber,
-			}
-
-			// 2. Call the branching logic
-			processedAr, err := ExecuteDatBranching(conn, ar)
+		var allParsedRecords []model.UnifiedInputRecord
+		for _, fileHeader := range r.MultipartForm.File["file"] {
+			file, err := fileHeader.Open()
 			if err != nil {
-				log.Printf("ExecuteDatBranching failed for JAN %s: %v", ar.Ajc, err)
+				log.Printf("Failed to open file %s: %v", fileHeader.Filename, err)
 				continue
 			}
-			finalRecords = append(finalRecords, processedAr)
+			defer file.Close()
+			parsed, err := ParseDat(file)
+			if err != nil {
+				log.Printf("Failed to parse file %s: %v", fileHeader.Filename, err)
+				continue
+			}
+			allParsedRecords = append(allParsedRecords, parsed...)
 		}
 
-		// 3. Persist the final records to the a_records table
+		// ✨ ここからが新しい高速化処理 ✨
+		// トランザクションを開始
+		tx, err := conn.Begin()
+		if err != nil {
+			http.Error(w, "Failed to begin transaction", http.StatusInternalServerError)
+			return
+		}
+		defer tx.Rollback()
+
+		// 新しい一括処理関数を呼び出す
+		finalRecords, err := central.ProcessDatRecords(tx, conn, allParsedRecords)
+		if err != nil {
+			log.Printf("central.ProcessDatRecords failed: %v", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+
 		if len(finalRecords) > 0 {
-			if err := db.PersistARecords(conn, finalRecords); err != nil {
-				log.Printf("PersistARecords error: %v", err)
+			if err := db.PersistTransactionRecordsInTx(tx, finalRecords); err != nil {
+				log.Printf("db.PersistTransactionRecordsInTx error: %v", err)
 				http.Error(w, "internal server error", http.StatusInternalServerError)
 				return
 			}
 		}
 
-		// Return the final, processed data as JSON to the frontend
+		if err := tx.Commit(); err != nil {
+			log.Printf("transaction commit error: %v", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		// ✨ ここまで ✨
+
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"message": "Parsed and processed DAT file successfully",
+			"message": "Parsed and processed DAT files successfully",
 			"records": finalRecords,
 		})
 	}

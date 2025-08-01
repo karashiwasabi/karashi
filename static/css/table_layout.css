@@ -1,0 +1,63 @@
+/* File: static/css/table_layout.css */
+
+/* --- テーブル専用のレイアウトスタイル --- */
+.data-table {
+    border-collapse: collapse;
+    width: 100%;
+    min-width: 1235px; /* Googleスプレッドシートのピクセル幅合計 */
+    table-layout: fixed;
+    border: 1px solid #ccc; /* 枠線の色を少し柔らかくします */
+}
+.data-table th,
+.data-table td {
+    border: 1px solid #ccc; /* 枠線の色を少し柔らかくします */
+    background-color: #ffffff;
+    text-align: left;
+    font-family: 'docs-sans-serif', Arial;
+    font-size: 11pt;
+    vertical-align: middle; /* topから変更 */
+    padding: 2px; /* パディングを少し狭くする */
+    white-space: normal;
+    word-break: break-all;
+}
+.data-table thead td {
+    background-color: #f0f0f0; /* ★背景色を薄いグレーに変更 */
+    text-align: center;
+    font-weight: bold;
+    color: #000000; /* ★文字色を黒に変更 */
+    padding: 4px 6px; /* パディングを調整 */
+    white-space: nowrap;
+}
+
+
+.data-table td input[type="text"],
+.data-table td input[type="date"],
+.data-table td select {
+    width: 100%;
+    border: 1px solid #999;
+    padding: 4px;
+    font-size: 11pt;
+    box-sizing: border-box;
+    background-color: #fff;
+}
+
+.data-table td button {
+    padding: 4px 8px;
+    background-color: #f0f0f0;
+    border: 1px solid #000;
+    cursor: pointer;
+    font-size: 10pt;
+    width: 100%; /* ボタンも幅100%に設定 */
+    box-sizing: border-box; /* パディングとボーダーを幅に含める */
+}
+
+.data-table td.center { text-align: center; }
+.data-table td.right { text-align: right; }
+
+.data-table tbody tr:nth-child(2n-1) td {
+    background-color: #ffffff;
+}
+
+.data-table tbody tr:nth-child(2n) td {
+    background-color: #f9f9f9;
+}

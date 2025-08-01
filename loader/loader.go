@@ -14,18 +14,19 @@ import (
 	"golang.org/x/text/transform"
 )
 
-// 各テーブルのスキーマ情報（どの列が数値か）を定義します
+// ★★★ ここにJC050の定義を追加 ★★★
 var tableSchemas = map[string]map[int]string{
 	"jcshms": {
 		44: "real", // JC044
-		61: "int",  // JC061
+		50: "real", // JC050 (薬価)
+		61: "int",
 		62: "int",
 		63: "int",
 		64: "int",
 		65: "int",
 		66: "int",
 	},
-	"jancode": { // jancodeの定義を元に戻します
+	"jancode": {
 		7: "real", // JA006
 		9: "real", // JA008
 	},

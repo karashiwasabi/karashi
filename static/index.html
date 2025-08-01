@@ -1,58 +1,136 @@
 <!DOCTYPE html>
 <html lang="ja">
 <head>
-  <meta charset="UTF-8" />
-  <title>YAMATO 集計システム</title>
-  <link rel="stylesheet" href="/static/css/styles.css" />
-  <link rel="icon" href="/favicon.ico" type="image/x-icon" />
-  <link rel="shortcut icon" href="/favicon.ico" type="image/x-icon" />
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>KARASHI</title>
+    <link rel="stylesheet" href="/static/css/styles.css">
+    <link rel="stylesheet" href="/static/css/table_layout.css">
 </head>
 <body>
-  <header id="header">
-    <nav>
-      <button id="datBtn" class="btn">納品・返品</button>
-      <button id="usageBtn" class="btn">USAGE</button>
-      <button id="aggregateBtn" class="btn">集計</button>
-      <button id="inventoryBtn" class="btn">棚卸</button>
-      <button id="ma2Btn" class="btn">MA2編集</button>
-      <button id="inoutBtn" class="btn">出庫・入庫</button>
-      <button id="printBtn" class="btn">印刷</button>
-    </nav>
-  </header>
 
-  <input type="file" id="datInput" multiple style="display:none" />
-  <input type="file" id="usageInput" multiple style="display:none" />
-  <input type="file" id="inventoryInput" style="display:none" />
-  <pre id="debug"></pre>
+    <header>
+        <button id="uploadViewBtn" class="btn">伝票アップロード</button>
+        <button id="inOutViewBtn" class="btn">入庫出庫</button>
+    </header>
 
-  <table id="outputTable">
-    <colgroup>
-      <col><col><col><col><col><col><col><col><col><col>
-      <col><col><col><col><col><col><col><col><col><col>
-      <col><col><col><col>
-    </colgroup>
-<thead>
-  <tr>
-    <th>日付</th><th>種別</th><th>YJ</th><th>JAN</th><th>製品名</th>
-    <th>包装</th><th>メーカー</th><th class="num">個数</th>
-    <th class="num">JAN数量</th><th class="num">JAN包装数量</th><th>JAN単位</th>
-    <th class="num">YJ数量</th><th class="num">YJ包装数量</th><th>YJ単位</th>
-    <th class="num">単価</th><th class="num">金額</th><th class="num">税額</th>
-    <th class="num">税率</th><th>期限</th><th>ロット</th><th>得意先</th>
-    <th>伝票番号</th><th class="num">行</th><th>MA</th>
-  </tr>
-</thead>
+    <main>
+        <div id="upload-view" class="hidden">
+            <input type="file" id="datFileInput" multiple style="display:none;">
+            <input type="file" id="usageFileInput" style="display:none;">
+            <div class="table-container">
+                <button id="datBtn" class="btn">納品・返品 (DAT) ファイル選択</button>
+                <button id="usageBtn" class="btn">処方 (USAGE) ファイル選択</button>
+            </div>
+            <div id="upload-output-container" class="table-container">
+                </div>
+         </div>
+
+        <div id="in-out-view">
+            <div class="in-out-header">
+                <h1>入庫出庫</h1>
+            </div>
+
+            <div class="section">
+                <h2>表1: div2までの表</h2>
+<table id="controller-table" class="data-table" cellspacing="0" cellpadding="0">
+    <thead>
+        <tr>
+            <td class="center" style="width: 10%;">日付</td>
+            <td class="center" style="width: 10%;">種別</td>
+            <td style="width: 25%;"></td> <td class="center" style="width: 5%;">税率</td>
+            <td class="center" style="width: 20%;">得意先</td>
+            <td class="center" style="width: 20%;">伝票番号</td>
+            <td class="center" style="width: 10%;">保存</td>
+        </tr>
+    </thead>
     <tbody>
-      </tbody>
-  </table>
+        <tr>
+            <td><input type="date" id="in-out-date"></td>
+            <td><select id="in-out-type"><option>入庫</option><option>出庫</option></select></td>
+            <td></td> <td><input type="text" id="in-out-taxrate" value="10"></td>
+            <td><select id="in-out-client" style="width:100%;"></select></td>
+            <td><select id="in-out-receipt" style="width:100%;"></select></td>
+            <td style="display: flex; gap: 5px;">
+                <button id="saveBtn" class="btn">保存</button>
+                <button id="deleteBtn" class="btn">伝票削除</button>
+            </td>
+        </tr>
+    </tbody>
+</table>
+            </div>
 
-  <script src="/static/js/dat.js"></script>
-  <script src="/static/js/usage.js"></script>
-  <script src="/static/js/inventory.js"></script>
-  <script>
-    // 印刷ボタン動作
-    document.getElementById("printBtn")
-      .addEventListener("click", () => window.print());
-  </script>
+            <div class="section">
+                <h2>表2: div3からの表</h2>
+                <div id="details-table-container">
+                    <table id="details-table" class="data-table" cellspacing="0" cellpadding="0">
+                        <thead>
+                            <tr>
+                                <td rowspan="2" class="center">日付</td>
+                                <td rowspan="2" class="center">種別</td>
+                                <td class="center">YJ</td>
+                                <td colspan="2" class="center">製品名</td>
+                                <td rowspan="2" class="center">個数</td>
+                                <td class="center">JAN数量</td>
+                                <td class="center">JAN包装数量</td>
+                                <td class="center">JAN単位</td>
+                                <td class="center">単価</td>
+                                <td class="center">税額</td>
+                                <td class="center">期限</td>
+                                <td class="center">ロット</td>
+                                <td class="center"><button id="addRowBtn">追加ボタン</button></td>
+                            </tr>
+                            <tr>
+                                <td class="center">JAN</td>
+                                <td class="center">包装</td>
+                                <td class="center">メーカー</td>
+                                <td class="center">YJ数量</td>
+                                <td class="center">YJ包装数量</td>
+                                <td class="center">YJ単位</td>
+                                <td class="center">金額</td>
+                                <td class="center">税率</td>
+                                <td class="center">得意先</td>
+                                <td class="center">伝票番号</td>
+                                <td class="center">行</td>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div id="search-modal" class="modal-overlay hidden">
+    <div class="modal-content">
+        <div class="modal-header">
+             <h2>薬品検索</h2>
+             <button id="closeModalBtn" class="close-button">&times;</button>
+        </div>
+        <div style="margin-bottom: 10px; display: flex; gap: 5px;">
+            <input type="text" id="product-search-input" placeholder="製品名またはカナ名（2文字以上）" style="flex-grow: 1; padding: 5px;">
+            <button id="product-search-btn" class="btn">検索</button>
+        </div>
+        <div class="modal-body" id="search-results-container">
+            <table class="data-table" id="search-results-table">
+                <thead>
+                    <tr>
+                        <th>製品名</th>
+                        <th>メーカー</th>
+                        <th>包装</th>
+                        <th>YJコード</th>
+                        <th>JANコード</th>
+                        <th>選択</th> </tr>
+                </thead>
+                <tbody>
+                    </tbody>
+            </table>
+        </div>
+     </div>
+</div>
+        </div>
+    </main>
+
+    <script type="module" src="/static/js/app.js"></script>
+
 </body>
 </html>

@@ -1,23 +1,56 @@
-// File: tani/tani.go
-package tani
+// File: units/units.go (修正版)
+package units
 
 import (
 	"encoding/csv"
 	"fmt"
 	"io"
+	"karashi/model"
 	"os"
 
 	"golang.org/x/text/encoding/japanese"
 	"golang.org/x/text/transform"
 )
 
-// internalMap にコード→名称を保持します
 var internalMap map[string]string
-
-// ★ 新規追加: 名称→コードの逆引きマップ
 var reverseMap map[string]string
 
-// LoadTANIFile は ShiftJIS で保存された単位マスターCSVを読み込みます。
+// ★★★ ここからが新しく追加・修正された部分 ★★★
+
+// resolveInnerUnitはJA007のコードから内包装の単位を解決するヘルパー関数です。
+// 0や空の場合は空文字を返します。
+func resolveInnerUnit(unitCode string) string {
+	if unitCode != "0" && unitCode != "" {
+		return ResolveName(unitCode)
+	}
+	return ""
+}
+
+// FormatPackageSpecは、JCSHMSのデータから仕様通りの包装文字列を生成します。
+func FormatPackageSpec(jcshms *model.JCShms) string {
+	if jcshms == nil {
+		return ""
+	}
+
+	yjUnitName := ResolveName(jcshms.JC039)
+	pkg := fmt.Sprintf("%s %g%s", jcshms.JC037, jcshms.JC044, yjUnitName)
+
+	if jcshms.JA006.Valid && jcshms.JA008.Valid && jcshms.JA008.Float64 != 0 {
+		// 新しいヘルパー関数を呼び出して単位を取得
+		innerUnit := resolveInnerUnit(jcshms.JA007.String)
+
+		pkg += fmt.Sprintf(" (%g%s×%g%s)",
+			jcshms.JA006.Float64,
+			yjUnitName,
+			jcshms.JA008.Float64,
+			innerUnit,
+		)
+	}
+	return pkg
+}
+
+// ★★★ ここまで ★★★
+
 func LoadTANIFile(path string) (map[string]string, error) {
 	file, err := os.Open(path)
 	if err != nil {
@@ -48,7 +81,6 @@ func LoadTANIFile(path string) (map[string]string, error) {
 	}
 	internalMap = m
 
-	// ★ 新規追加: 読み込み時に逆引きマップも生成する
 	reverseMap = make(map[string]string)
 	for code, name := range internalMap {
 		reverseMap[name] = code
@@ -57,7 +89,6 @@ func LoadTANIFile(path string) (map[string]string, error) {
 	return m, nil
 }
 
-// ResolveName は与えられたコードの名称を返します。
 func ResolveName(code string) string {
 	if internalMap == nil {
 		return code
@@ -68,13 +99,12 @@ func ResolveName(code string) string {
 	return code
 }
 
-// ★ 新規追加: 単位名をコードに変換する関数
 func ResolveCode(name string) string {
 	if reverseMap == nil {
-		return "" // マップがなければ空文字を返す
+		return ""
 	}
 	if code, ok := reverseMap[name]; ok {
 		return code
 	}
-	return "" // 見つからなければ空文字を返す
+	return ""
 }
