@@ -73,7 +73,15 @@ func ProcessUsageRecords(tx *sql.Tx, conn *sql.DB, records []model.UnifiedInputR
 				ar.ProcessFlagMA = FlagProvisional
 				ar.ProcessingStatus = sql.NullString{String: "provisional", Valid: true}
 			}
-			ar.JanQuantity = ar.YjQuantity // USAGEではYjQuantityをJanQuantityにコピー
+
+			// ★★★ ここからJAN数量の計算ロジックを修正 ★★★
+			if master.JanPackInnerQty > 0 {
+				ar.JanQuantity = ar.YjQuantity / master.JanPackInnerQty
+			} else {
+				ar.JanQuantity = ar.YjQuantity // ゼロ除算を避ける
+			}
+			// ★★★ ここまで ★★★
+
 			mappers.MapProductMasterToTransaction(&ar, master)
 			ar.JanCode = master.ProductCode
 		} else {
@@ -82,14 +90,21 @@ func ProcessUsageRecords(tx *sql.Tx, conn *sql.DB, records []model.UnifiedInputR
 				ar.ProcessingStatus = sql.NullString{String: "completed", Valid: true}
 				yjCode := jcshms.JC009
 				if yjCode == "" {
-					// ★★★ 呼び出し方を修正 ★★★
 					newYj, _ := db.NextSequenceInTx(tx, "MA2Y", "MA2Y", 8)
 					yjCode = newYj
 				}
 				ar.YjCode = yjCode
 				mappers.CreateMasterFromJcshmsInTx(tx, ar.JanCode, yjCode, jcshms)
 				mappers.MapJcshmsToTransaction(&ar, jcshms)
-				ar.JanQuantity = ar.YjQuantity
+
+				// ★★★ ここからJAN数量の計算ロジックを修正 ★★★
+				if jcshms.JA006.Float64 > 0 {
+					ar.JanQuantity = ar.YjQuantity / jcshms.JA006.Float64
+				} else {
+					ar.JanQuantity = ar.YjQuantity // ゼロ除算を避ける
+				}
+				// ★★★ ここまで ★★★
+
 			} else {
 				ar.ProcessFlagMA = FlagProvisional
 				ar.ProcessingStatus = sql.NullString{String: "provisional", Valid: true}
@@ -105,6 +120,7 @@ func ProcessUsageRecords(tx *sql.Tx, conn *sql.DB, records []model.UnifiedInputR
 				ar.YjCode = newYj
 				ar.JanCode = productCode
 
+				// 暫定マスターには包装数量がないため、YjQuantityをコピー
 				ar.JanQuantity = ar.YjQuantity
 			}
 		}

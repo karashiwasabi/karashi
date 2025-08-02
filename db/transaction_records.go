@@ -1,4 +1,4 @@
-// File: db/transaction_records.go
+// File: db/transaction_records.go (Corrected)
 package db
 
 import (
@@ -8,7 +8,34 @@ import (
 	"log"
 )
 
-// PersistTransactionRecordsは、新しいトランザクションを開始してレコードを保存します。
+// ★★★ EXPORTED by capitalizing the first letter ★★★
+const TransactionColumns = `
+    id, transaction_date, client_code, receipt_number, line_number, flag,
+    jan_code, yj_code, product_name, kana_name, package_form, package_spec, maker_name,
+    dat_quantity, jan_pack_inner_qty, jan_quantity, jan_pack_unit_qty, jan_unit_name, jan_unit_code,
+    yj_quantity, yj_pack_unit_qty, yj_unit_name, unit_price, subtotal,
+    tax_amount, tax_rate, expiry_date, lot_number, flag_poison,
+    flag_deleterious, flag_narcotic, flag_psychotropic, flag_stimulant,
+    flag_stimulant_raw, process_flag_ma, processing_status`
+
+// ★★★ EXPORTED by capitalizing the first letter ★★★
+func ScanTransactionRecord(row interface{ Scan(...interface{}) error }) (*model.TransactionRecord, error) {
+	var r model.TransactionRecord
+	if err := row.Scan(
+		&r.ID, &r.TransactionDate, &r.ClientCode, &r.ReceiptNumber, &r.LineNumber, &r.Flag,
+		&r.JanCode, &r.YjCode, &r.ProductName, &r.KanaName, &r.PackageForm, &r.PackageSpec, &r.MakerName,
+		&r.DatQuantity, &r.JanPackInnerQty, &r.JanQuantity, &r.JanPackUnitQty, &r.JanUnitName, &r.JanUnitCode,
+		&r.YjQuantity, &r.YjPackUnitQty, &r.YjUnitName, &r.UnitPrice, &r.Subtotal,
+		&r.TaxAmount, &r.TaxRate, &r.ExpiryDate, &r.LotNumber, &r.FlagPoison,
+		&r.FlagDeleterious, &r.FlagNarcotic, &r.FlagPsychotropic, &r.FlagStimulant,
+		&r.FlagStimulantRaw, &r.ProcessFlagMA, &r.ProcessingStatus,
+	); err != nil {
+		return nil, err
+	}
+	return &r, nil
+}
+
+// PersistTransactionRecords starts a new transaction to save records.
 func PersistTransactionRecords(conn *sql.DB, records []model.TransactionRecord) error {
 	tx, err := conn.Begin()
 	if err != nil {
@@ -23,7 +50,7 @@ func PersistTransactionRecords(conn *sql.DB, records []model.TransactionRecord) 
 	return tx.Commit()
 }
 
-// PersistTransactionRecordsInTxは、既存のトランザクション内でレコードを保存します。
+// PersistTransactionRecordsInTx saves records within an existing transaction.
 func PersistTransactionRecordsInTx(tx *sql.Tx, records []model.TransactionRecord) error {
 	const q = `
 INSERT OR REPLACE INTO transaction_records (
@@ -62,7 +89,7 @@ INSERT OR REPLACE INTO transaction_records (
 	return nil
 }
 
-// GetReceiptNumbersByDateは、指定された日付に存在する伝票番号のリストを返します。
+// GetReceiptNumbersByDate returns a list of receipt numbers for a given date.
 func GetReceiptNumbersByDate(conn *sql.DB, date string) ([]string, error) {
 	rows, err := conn.Query("SELECT DISTINCT receipt_number FROM transaction_records WHERE transaction_date = ? ORDER BY receipt_number", date)
 	if err != nil {
@@ -81,19 +108,9 @@ func GetReceiptNumbersByDate(conn *sql.DB, date string) ([]string, error) {
 	return numbers, nil
 }
 
-// ★★★ THIS FUNCTION IS UPDATED ★★★
 // GetTransactionsByReceiptNumber returns all details for a given receipt number.
 func GetTransactionsByReceiptNumber(conn *sql.DB, receiptNumber string) ([]model.TransactionRecord, error) {
-	// Select all columns to ensure data is complete
-	q := `SELECT
-		id, transaction_date, client_code, receipt_number, line_number, flag,
-		jan_code, yj_code, product_name, kana_name, package_form, package_spec, maker_name,
-		dat_quantity, jan_pack_inner_qty, jan_quantity, jan_pack_unit_qty, jan_unit_name, jan_unit_code,
-		yj_quantity, yj_pack_unit_qty, yj_unit_name, unit_price, subtotal,
-		tax_amount, tax_rate, expiry_date, lot_number, flag_poison,
-		flag_deleterious, flag_narcotic, flag_psychotropic, flag_stimulant,
-		flag_stimulant_raw, process_flag_ma, processing_status
-	FROM transaction_records WHERE receipt_number = ? ORDER BY line_number`
+	q := `SELECT ` + TransactionColumns + ` FROM transaction_records WHERE receipt_number = ? ORDER BY line_number`
 
 	rows, err := conn.Query(q, receiptNumber)
 	if err != nil {
@@ -103,25 +120,15 @@ func GetTransactionsByReceiptNumber(conn *sql.DB, receiptNumber string) ([]model
 
 	var records []model.TransactionRecord
 	for rows.Next() {
-		var r model.TransactionRecord
-		// Scan all fields in the correct order
-		if err := rows.Scan(
-			&r.ID, &r.TransactionDate, &r.ClientCode, &r.ReceiptNumber, &r.LineNumber, &r.Flag,
-			&r.JanCode, &r.YjCode, &r.ProductName, &r.KanaName, &r.PackageForm, &r.PackageSpec, &r.MakerName,
-			&r.DatQuantity, &r.JanPackInnerQty, &r.JanQuantity, &r.JanPackUnitQty, &r.JanUnitName, &r.JanUnitCode,
-			&r.YjQuantity, &r.YjPackUnitQty, &r.YjUnitName, &r.UnitPrice, &r.Subtotal,
-			&r.TaxAmount, &r.TaxRate, &r.ExpiryDate, &r.LotNumber, &r.FlagPoison,
-			&r.FlagDeleterious, &r.FlagNarcotic, &r.FlagPsychotropic, &r.FlagStimulant,
-			&r.FlagStimulantRaw, &r.ProcessFlagMA, &r.ProcessingStatus,
-		); err != nil {
+		r, err := ScanTransactionRecord(rows)
+		if err != nil {
 			return nil, err
 		}
-		records = append(records, r)
+		records = append(records, *r)
 	}
 	return records, nil
 }
 
-// ★★★ ADD THE FOLLOWING FUNCTION ★★★
 // DeleteTransactionsByReceiptNumberInTx deletes all records for a given receipt number within a transaction.
 func DeleteTransactionsByReceiptNumberInTx(tx *sql.Tx, receiptNumber string) error {
 	const q = `DELETE FROM transaction_records WHERE receipt_number = ?`

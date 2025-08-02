@@ -1,4 +1,4 @@
-// File: inout/handler.go (Corrected)
+// File: inout/handler.go (修正版)
 package inout
 
 import (
@@ -12,6 +12,7 @@ import (
 	"time"
 )
 
+// SavePayload はフロントエンドから送られてくるJSONの構造体です
 type SavePayload struct {
 	IsNewClient           bool                      `json:"isNewClient"`
 	ClientCode            string                    `json:"clientCode"`
@@ -19,9 +20,10 @@ type SavePayload struct {
 	TransactionDate       string                    `json:"transactionDate"`
 	TransactionType       string                    `json:"transactionType"`
 	Records               []model.TransactionRecord `json:"records"`
-	OriginalReceiptNumber string                    `json:"originalReceiptNumber"` // ★ ADDED
+	OriginalReceiptNumber string                    `json:"originalReceiptNumber"`
 }
 
+// SaveInOutHandler は入出庫データを保存します
 func SaveInOutHandler(conn *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var payload SavePayload
@@ -37,32 +39,51 @@ func SaveInOutHandler(conn *sql.DB) http.HandlerFunc {
 		}
 		defer tx.Rollback()
 
-		// --- Client Handling ---
+		// --- 得意先処理 ---
 		clientCode := payload.ClientCode
 		if payload.IsNewClient {
-			// ... (no changes here)
+			var exists int
+			err := tx.QueryRow("SELECT 1 FROM client_master WHERE client_name = ? LIMIT 1", payload.ClientName).Scan(&exists)
+			if err != sql.ErrNoRows {
+				if err == nil {
+					w.WriteHeader(http.StatusConflict)
+					json.NewEncoder(w).Encode(map[string]string{"message": fmt.Sprintf("得意先名 '%s' は既に使用されています。", payload.ClientName)})
+				} else {
+					http.Error(w, "Failed to check client existence", http.StatusInternalServerError)
+				}
+				return
+			}
+
+			newCode, err := db.NextSequenceInTx(tx, "CL", "CL", 4)
+			if err != nil {
+				http.Error(w, "Failed to generate new client code", http.StatusInternalServerError)
+				return
+			}
+
+			_, err = tx.Exec("INSERT INTO client_master (client_code, client_name) VALUES (?, ?)", newCode, payload.ClientName)
+			if err != nil {
+				http.Error(w, "Failed to create new client", http.StatusInternalServerError)
+				return
+			}
+			clientCode = newCode
 		}
 
-		// --- Receipt Number Handling ---
+		// --- 伝票番号処理 ---
 		var receiptNumber string
 		dateStr := payload.TransactionDate
 		if dateStr == "" {
 			dateStr = time.Now().Format("20060102")
 		}
 
-		// ★★★ ADDED: Check if this is an update or a new slip ★★★
 		if payload.OriginalReceiptNumber != "" {
-			// This is an UPDATE (delete and re-register)
 			receiptNumber = payload.OriginalReceiptNumber
 			if err := db.DeleteTransactionsByReceiptNumberInTx(tx, receiptNumber); err != nil {
-				// We ignore the "no transaction found" error, as it's not critical
 				if err.Error() != fmt.Sprintf("no transaction found with receipt number: %s", receiptNumber) {
 					http.Error(w, "Failed to delete original slip for update", http.StatusInternalServerError)
 					return
 				}
 			}
 		} else {
-			// This is a NEW slip, generate a new number
 			var lastSeq int
 			q := `SELECT CAST(SUBSTR(receipt_number, 11) AS INTEGER) FROM transaction_records 
 				  WHERE receipt_number LIKE ? ORDER BY 1 DESC LIMIT 1`
@@ -75,7 +96,7 @@ func SaveInOutHandler(conn *sql.DB) http.HandlerFunc {
 			receiptNumber = fmt.Sprintf("io%s%03d", dateStr, newSeq)
 		}
 
-		// --- Record Saving ---
+		// --- レコード保存 ---
 		flagMap := map[string]int{"入庫": 1, "出庫": 2}
 		flag := flagMap[payload.TransactionType]
 
@@ -94,8 +115,30 @@ func SaveInOutHandler(conn *sql.DB) http.HandlerFunc {
 					http.Error(w, "Failed to check product master", http.StatusInternalServerError)
 					return
 				}
-				if master == nil {
-					// ... (create new master logic - no changes here)
+				if master == nil { // マスターが存在しない場合は作成
+					newMaster := model.ProductMasterInput{
+						ProductCode:      rec.JanCode,
+						YjCode:           rec.YjCode,
+						ProductName:      rec.ProductName,
+						Origin:           "JCSHMS", // ★★★ ここを "MANUAL_ENTRY" から "JCSHMS" に修正 ★★★
+						KanaName:         rec.KanaName,
+						MakerName:        rec.MakerName,
+						PackageSpec:      rec.PackageForm,
+						YjUnitName:       rec.YjUnitName,
+						YjPackUnitQty:    rec.YjPackUnitQty,
+						JanPackInnerQty:  rec.JanPackInnerQty,
+						JanPackUnitQty:   rec.JanPackUnitQty,
+						FlagPoison:       rec.FlagPoison,
+						FlagDeleterious:  rec.FlagDeleterious,
+						FlagNarcotic:     rec.FlagNarcotic,
+						FlagPsychotropic: rec.FlagPsychotropic,
+						FlagStimulant:    rec.FlagStimulant,
+						FlagStimulantRaw: rec.FlagStimulantRaw,
+					}
+					if err := db.CreateProductMasterInTx(tx, newMaster); err != nil {
+						http.Error(w, "Failed to create new product master", http.StatusInternalServerError)
+						return
+					}
 				}
 			}
 		}
@@ -103,7 +146,7 @@ func SaveInOutHandler(conn *sql.DB) http.HandlerFunc {
 		if err := db.PersistTransactionRecordsInTx(tx, payload.Records); err != nil {
 			log.Printf("Failed to persist records: %v", err)
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]string{"message": "Database save failed."})
+			json.NewEncoder(w).Encode(map[string]string{"message": "データベースへの保存に失敗しました。"})
 			return
 		}
 

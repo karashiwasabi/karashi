@@ -1,9 +1,10 @@
-// File: dat/handler.go
+// File: dat/handler.go (最終修正版)
 package dat
 
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"karashi/central"
 	"karashi/db"
 	"karashi/model"
@@ -39,8 +40,9 @@ func UploadDatHandler(conn *sql.DB) http.HandlerFunc {
 			allParsedRecords = append(allParsedRecords, parsed...)
 		}
 
-		// ✨ ここからが新しい高速化処理 ✨
-		// トランザクションを開始
+		// ▼▼▼ 修正点: 重複除去処理を追加 ▼▼▼
+		filteredRecords := removeDatDuplicates(allParsedRecords)
+
 		tx, err := conn.Begin()
 		if err != nil {
 			http.Error(w, "Failed to begin transaction", http.StatusInternalServerError)
@@ -48,8 +50,8 @@ func UploadDatHandler(conn *sql.DB) http.HandlerFunc {
 		}
 		defer tx.Rollback()
 
-		// 新しい一括処理関数を呼び出す
-		finalRecords, err := central.ProcessDatRecords(tx, conn, allParsedRecords)
+		// ▼▼▼ 修正点: 重複除去後のリストを渡す ▼▼▼
+		finalRecords, err := central.ProcessDatRecords(tx, conn, filteredRecords)
 		if err != nil {
 			log.Printf("central.ProcessDatRecords failed: %v", err)
 			http.Error(w, "internal server error", http.StatusInternalServerError)
@@ -69,7 +71,6 @@ func UploadDatHandler(conn *sql.DB) http.HandlerFunc {
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
-		// ✨ ここまで ✨
 
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		json.NewEncoder(w).Encode(map[string]interface{}{
@@ -77,4 +78,20 @@ func UploadDatHandler(conn *sql.DB) http.HandlerFunc {
 			"records": finalRecords,
 		})
 	}
+}
+
+// ▼▼▼ 修正点: 重複除去のための関数を追加 ▼▼▼
+func removeDatDuplicates(records []model.UnifiedInputRecord) []model.UnifiedInputRecord {
+	seen := make(map[string]struct{})
+	var result []model.UnifiedInputRecord
+
+	for _, r := range records {
+		key := fmt.Sprintf("%s|%s|%s|%s", r.Date, r.ClientCode, r.ReceiptNumber, r.LineNumber)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, r)
+	}
+	return result
 }

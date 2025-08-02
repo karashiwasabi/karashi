@@ -3,6 +3,37 @@ package model
 
 import "database/sql"
 
+// AggregationFilters は集計時のフィルター条件を保持します
+type AggregationFilters struct {
+	StartDate  string
+	EndDate    string
+	KanaName   string
+	DrugTypes  []string
+	NoMovement bool
+}
+
+// YJGroup はYJコードごとの集計結果です
+type YJGroup struct {
+	YjCode        string         `json:"yjCode"`
+	ProductName   string         `json:"productName"`
+	TotalJanQty   float64        `json:"totalJanQty"`
+	TotalYjQty    float64        `json:"totalYjQty"`
+	MaxUsageYjQty float64        `json:"maxUsageYjQty"`
+	PackageGroups []PackageGroup `json:"packageGroups"`
+}
+
+// PackageGroup は包装ごとの集計結果です
+type PackageGroup struct {
+	PackageKey     string              `json:"packageKey"`
+	TotalJanQty    float64             `json:"totalJanQty"`
+	MaxUsageJanQty float64             `json:"maxUsageJanQty"`
+	TotalYjQty     float64             `json:"totalYjQty"`
+	MaxUsageYjQty  float64             `json:"maxUsageYjQty"`
+	Transactions   []TransactionRecord `json:"transactions"`
+}
+
+// ★★★ ここまで ★★★
+
 type JCShms struct {
 	JC009 string
 	JC018 string
@@ -81,7 +112,7 @@ type ProductMaster struct {
 	JanPackInnerQty  float64 `json:"janPackInnerQty"`
 	JanUnitCode      int     `json:"janUnitCode"`
 	JanPackUnitQty   float64 `json:"janPackUnitQty"`
-	JanUnitName      string  `json:"janUnitName"` // ★★★ この行を追加 ★★★
+	JanUnitName      string  `json:"janUnitName"`
 	ReorderPoint     float64 `json:"reorderPoint"`
 	NhiPrice         float64 `json:"nhiPrice"`
 }
@@ -105,7 +136,7 @@ type ProductMasterInput struct {
 	JanPackInnerQty  float64 `json:"janPackInnerQty"`
 	JanUnitCode      int     `json:"janUnitCode"`
 	JanPackUnitQty   float64 `json:"janPackUnitQty"`
-	JanUnitName      string  `json:"janUnitName"` // ★★★ この行を追加 ★★★
+	JanUnitName      string  `json:"janUnitName"`
 	ReorderPoint     float64 `json:"reorderPoint"`
 	NhiPrice         float64 `json:"nhiPrice"`
 }
@@ -115,7 +146,6 @@ type ProductMasterView struct {
 	FormattedPackageSpec string `json:"formattedPackageSpec"`
 }
 
-// ★★★ 得意先マスターの1行を表す構造体を追加 ★★★
 type Client struct {
 	Code string `json:"code"`
 	Name string `json:"name"`

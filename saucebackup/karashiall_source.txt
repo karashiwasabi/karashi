@@ -1,0 +1,5013 @@
+----- C:\Dev\KARASHI\aggregation\handler.go -----
+// File: aggregation/handler.go (最終修正版)
+package aggregation
+
+import (
+	"database/sql"
+	"encoding/json"
+	"karashi/db"
+	"karashi/model"
+	"net/http"
+	"strings"
+)
+
+// GetAggregationHandler returns the aggregated results.
+func GetAggregationHandler(conn *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		filters := model.AggregationFilters{
+			StartDate: q.Get("startDate"),
+			EndDate:   q.Get("endDate"),
+			KanaName:  q.Get("kanaName"),
+			DrugTypes: strings.Split(q.Get("drugTypes"), ","),
+			// ▼▼▼ 修正点: NoMovementパラメーターの読み込みを追加 ▼▼▼
+			NoMovement: q.Get("noMovement") == "true",
+		}
+
+		results, err := db.GetAggregatedTransactions(conn, filters)
+		if err != nil {
+			http.Error(w, "Failed to get aggregated data", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(results)
+	}
+}
+
+
+----- C:\Dev\KARASHI\backup\handler.go -----
+// File: backup/handler.go (Corrected)
+package backup
+
+import (
+	"bytes"
+	"database/sql"
+	"encoding/csv"
+	"encoding/json"
+	"fmt"
+	"karashi/db"
+	"karashi/model"
+	"log"
+	"net/http"
+	"strconv"
+
+	"golang.org/x/text/encoding/japanese"
+	"golang.org/x/text/transform"
+)
+
+// ExportClientsHandler handles exporting the client master to a CSV file.
+func ExportClientsHandler(conn *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		clients, err := db.GetAllClients(conn)
+		if err != nil {
+			http.Error(w, "Failed to get clients", http.StatusInternalServerError)
+			return
+		}
+
+		var buf bytes.Buffer
+		sjisWriter := transform.NewWriter(&buf, japanese.ShiftJIS.NewEncoder())
+		csvWriter := csv.NewWriter(sjisWriter)
+
+		if err := csvWriter.Write([]string{"client_code", "client_name"}); err != nil {
+			http.Error(w, "Failed to write CSV header", http.StatusInternalServerError)
+			return
+		}
+
+		for _, client := range clients {
+			if err := csvWriter.Write([]string{client.Code, client.Name}); err != nil {
+				http.Error(w, "Failed to write CSV row", http.StatusInternalServerError)
+				return
+			}
+		}
+
+		csvWriter.Flush()
+
+		w.Header().Set("Content-Type", "text/csv")
+		w.Header().Set("Content-Disposition", `attachment; filename="client_master.csv"`)
+		w.Write(buf.Bytes())
+	}
+}
+
+// ImportClientsHandler handles importing clients from a CSV file.
+func ImportClientsHandler(conn *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(10 << 20); err != nil {
+			http.Error(w, "File upload error", http.StatusBadRequest)
+			return
+		}
+
+		file, _, err := r.FormFile("file")
+		if err != nil {
+			http.Error(w, "No file uploaded", http.StatusBadRequest)
+			return
+		}
+		defer file.Close()
+
+		sjisReader := transform.NewReader(file, japanese.ShiftJIS.NewDecoder())
+		csvReader := csv.NewReader(sjisReader)
+		records, err := csvReader.ReadAll()
+		if err != nil {
+			http.Error(w, "Failed to parse CSV file", http.StatusBadRequest)
+			return
+		}
+
+		if len(records) < 1 {
+			http.Error(w, "Empty CSV file", http.StatusBadRequest)
+			return
+		}
+
+		tx, err := conn.Begin()
+		if err != nil {
+			http.Error(w, "Failed to start transaction", http.StatusInternalServerError)
+			return
+		}
+		defer tx.Rollback()
+
+		stmt, err := tx.Prepare("INSERT OR REPLACE INTO client_master (client_code, client_name) VALUES (?, ?)")
+		if err != nil {
+			http.Error(w, "Failed to prepare DB statement", http.StatusInternalServerError)
+			return
+		}
+		defer stmt.Close()
+
+		var importedCount int
+		for i := 1; i < len(records); i++ {
+			row := records[i]
+			if len(row) < 2 {
+				continue
+			}
+			clientCode := row[0]
+			clientName := row[1]
+			if _, err := stmt.Exec(clientCode, clientName); err != nil {
+				log.Printf("Failed to import row %d: %v", i+1, err)
+				http.Error(w, fmt.Sprintf("Failed to import row %d", i+1), http.StatusInternalServerError)
+				return
+			}
+			importedCount++
+		}
+
+		if err := tx.Commit(); err != nil {
+			http.Error(w, "Failed to commit transaction", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{
+			"message": fmt.Sprintf("%d件の得意先をインポートしました。", importedCount),
+		})
+	}
+}
+
+// ExportProductsHandler handles exporting the product master to a CSV file.
+func ExportProductsHandler(conn *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// ★★★ CHANGED: Use GetEditableProductMasters to fetch only non-JCSHMS items ★★★
+		products, err := db.GetEditableProductMasters(conn)
+		if err != nil {
+			http.Error(w, "Failed to get products", http.StatusInternalServerError)
+			return
+		}
+
+		var buf bytes.Buffer
+		sjisWriter := transform.NewWriter(&buf, japanese.ShiftJIS.NewEncoder())
+		csvWriter := csv.NewWriter(sjisWriter)
+
+		header := []string{
+			"product_code", "yj_code", "product_name", "origin", "kana_name", "maker_name", "package_spec",
+			"yj_unit_name", "yj_pack_unit_qty", "flag_poison", "flag_deleterious", "flag_narcotic",
+			"flag_psychotropic", "flag_stimulant", "flag_stimulant_raw", "jan_pack_inner_qty",
+			"jan_unit_code", "jan_pack_unit_qty", "reorder_point", "nhi_price",
+		}
+		if err := csvWriter.Write(header); err != nil {
+			http.Error(w, "Failed to write CSV header", http.StatusInternalServerError)
+			return
+		}
+
+		for _, p := range products {
+			row := []string{
+				p.ProductCode, p.YjCode, p.ProductName, p.Origin, p.KanaName, p.MakerName, p.PackageSpec,
+				p.YjUnitName, fmt.Sprintf("%f", p.YjPackUnitQty), fmt.Sprintf("%d", p.FlagPoison),
+				fmt.Sprintf("%d", p.FlagDeleterious), fmt.Sprintf("%d", p.FlagNarcotic),
+				fmt.Sprintf("%d", p.FlagPsychotropic), fmt.Sprintf("%d", p.FlagStimulant),
+				fmt.Sprintf("%d", p.FlagStimulantRaw), fmt.Sprintf("%f", p.JanPackInnerQty),
+				fmt.Sprintf("%d", p.JanUnitCode), fmt.Sprintf("%f", p.JanPackUnitQty),
+				fmt.Sprintf("%f", p.ReorderPoint), fmt.Sprintf("%f", p.NhiPrice),
+			}
+			if err := csvWriter.Write(row); err != nil {
+				http.Error(w, "Failed to write CSV row", http.StatusInternalServerError)
+				return
+			}
+		}
+		csvWriter.Flush()
+
+		w.Header().Set("Content-Type", "text/csv")
+		w.Header().Set("Content-Disposition", `attachment; filename="product_master.csv"`)
+		w.Write(buf.Bytes())
+	}
+}
+
+// ImportProductsHandler handles importing products from a CSV file.
+func ImportProductsHandler(conn *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(10 << 20); err != nil {
+			http.Error(w, "File upload error", http.StatusBadRequest)
+			return
+		}
+
+		file, _, err := r.FormFile("file")
+		if err != nil {
+			http.Error(w, "No file uploaded", http.StatusBadRequest)
+			return
+		}
+		defer file.Close()
+
+		sjisReader := transform.NewReader(file, japanese.ShiftJIS.NewDecoder())
+		csvReader := csv.NewReader(sjisReader)
+		records, err := csvReader.ReadAll()
+		if err != nil {
+			http.Error(w, "Failed to parse CSV file", http.StatusBadRequest)
+			return
+		}
+
+		if len(records) < 2 { // At least one header and one data row
+			http.Error(w, "CSV file must have a header and at least one data row", http.StatusBadRequest)
+			return
+		}
+
+		tx, err := conn.Begin()
+		if err != nil {
+			http.Error(w, "Failed to start transaction", http.StatusInternalServerError)
+			return
+		}
+		defer tx.Rollback()
+
+		var importedCount int
+		for i := 1; i < len(records); i++ {
+			row := records[i]
+			if len(row) < 20 {
+				continue
+			}
+
+			yjPackUnitQty, _ := strconv.ParseFloat(row[8], 64)
+			flagPoison, _ := strconv.Atoi(row[9])
+			flagDeleterious, _ := strconv.Atoi(row[10])
+			flagNarcotic, _ := strconv.Atoi(row[11])
+			flagPsychotropic, _ := strconv.Atoi(row[12])
+			flagStimulant, _ := strconv.Atoi(row[13])
+			flagStimulantRaw, _ := strconv.Atoi(row[14])
+			janPackInnerQty, _ := strconv.ParseFloat(row[15], 64)
+			janUnitCode, _ := strconv.Atoi(row[16])
+			janPackUnitQty, _ := strconv.ParseFloat(row[17], 64)
+			reorderPoint, _ := strconv.ParseFloat(row[18], 64)
+			nhiPrice, _ := strconv.ParseFloat(row[19], 64)
+
+			input := model.ProductMasterInput{
+				ProductCode: row[0], YjCode: row[1], ProductName: row[2], Origin: row[3], KanaName: row[4],
+				MakerName: row[5], PackageSpec: row[6], YjUnitName: row[7], YjPackUnitQty: yjPackUnitQty,
+				FlagPoison: flagPoison, FlagDeleterious: flagDeleterious, FlagNarcotic: flagNarcotic,
+				FlagPsychotropic: flagPsychotropic, FlagStimulant: flagStimulant, FlagStimulantRaw: flagStimulantRaw,
+				JanPackInnerQty: janPackInnerQty, JanUnitCode: janUnitCode, JanPackUnitQty: janPackUnitQty,
+				ReorderPoint: reorderPoint, NhiPrice: nhiPrice,
+			}
+
+			if err := db.UpsertProductMasterInTx(tx, input); err != nil {
+				log.Printf("Failed to import product row %d: %v", i+1, err)
+				http.Error(w, fmt.Sprintf("Failed to import product row %d", i+1), http.StatusInternalServerError)
+				return
+			}
+			importedCount++
+		}
+
+		if err := tx.Commit(); err != nil {
+			http.Error(w, "Failed to commit transaction", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{
+			"message": fmt.Sprintf("%d件の製品をインポートしました。", importedCount),
+		})
+	}
+}
+
+
+----- C:\Dev\KARASHI\central\constants.go -----
+// File: central/constants.go
+package central
+
+// ProcessFlagMA の値を定数として定義
+const (
+	FlagComplete    = "COMPLETE"    // データ完了（既存マスタ、またはJCSHMS由来）
+	FlagProvisional = "PROVISIONAL" // 暫定データ（最小情報からの自動採番）、継続的な更新対象
+)
+
+
+----- C:\Dev\KARASHI\central\dat_processor.go -----
+// File: central/dat_processor.go (修正版)
+package central
+
+import (
+	"database/sql"
+	"fmt"
+	"karashi/db"
+	"karashi/mappers"
+	"karashi/model"
+)
+
+func ProcessDatRecords(tx *sql.Tx, conn *sql.DB, records []model.UnifiedInputRecord) ([]model.TransactionRecord, error) {
+	if len(records) == 0 {
+		return []model.TransactionRecord{}, nil
+	}
+
+	keySet := make(map[string]struct{})
+	janSet := make(map[string]struct{})
+	for _, rec := range records {
+		if rec.JanCode != "" && rec.JanCode != "0000000000000" {
+			janSet[rec.JanCode] = struct{}{}
+		}
+		key := rec.JanCode
+		if key == "0000000000000" {
+			key = fmt.Sprintf("9999999999999%s", rec.ProductName)
+		}
+		if key != "" {
+			keySet[key] = struct{}{}
+		}
+	}
+	keyList := make([]string, 0, len(keySet))
+	for key := range keySet {
+		keyList = append(keyList, key)
+	}
+	janList := make([]string, 0, len(janSet))
+	for jan := range janSet {
+		janList = append(janList, jan)
+	}
+
+	mastersMap, err := db.GetProductMastersByCodesMap(conn, keyList)
+	if err != nil {
+		return nil, fmt.Errorf("failed to bulk get product masters: %w", err)
+	}
+	jcshmsMap, err := db.GetJcshmsByCodesMap(conn, janList)
+	if err != nil {
+		return nil, fmt.Errorf("failed to bulk get jcshms: %w", err)
+	}
+
+	var finalRecords []model.TransactionRecord
+	for _, rec := range records {
+		ar := model.TransactionRecord{
+			TransactionDate: rec.Date, ClientCode: rec.ClientCode, ReceiptNumber: rec.ReceiptNumber,
+			LineNumber: rec.LineNumber, Flag: rec.Flag, JanCode: rec.JanCode,
+			ProductName: rec.ProductName, DatQuantity: rec.DatQuantity, UnitPrice: rec.UnitPrice,
+			Subtotal: rec.Subtotal, ExpiryDate: rec.ExpiryDate, LotNumber: rec.LotNumber,
+		}
+
+		key := ar.JanCode
+		if key == "0000000000000" {
+			key = fmt.Sprintf("9999999999999%s", ar.ProductName)
+		}
+
+		if master, ok := mastersMap[key]; ok {
+			if master.Origin == "JCSHMS" {
+				ar.ProcessFlagMA = FlagComplete
+				ar.ProcessingStatus = sql.NullString{String: "completed", Valid: true}
+			} else {
+				ar.ProcessFlagMA = FlagProvisional
+				ar.ProcessingStatus = sql.NullString{String: "provisional", Valid: true}
+			}
+			ar.JanQuantity = ar.DatQuantity * master.JanPackUnitQty
+			ar.YjQuantity = ar.DatQuantity * master.YjPackUnitQty
+			mappers.MapProductMasterToTransaction(&ar, master)
+		} else {
+			if jcshms, ok := jcshmsMap[ar.JanCode]; ok && jcshms.JC018 != "" {
+				ar.ProcessFlagMA = FlagComplete
+				ar.ProcessingStatus = sql.NullString{String: "completed", Valid: true}
+				yjCode := jcshms.JC009
+				if yjCode == "" {
+					// ★★★ 呼び出し方を修正 ★★★
+					newYj, _ := db.NextSequenceInTx(tx, "MA2Y", "MA2Y", 8)
+					yjCode = newYj
+				}
+				ar.YjCode = yjCode
+				mappers.CreateMasterFromJcshmsInTx(tx, ar.JanCode, ar.YjCode, jcshms)
+				mappers.MapJcshmsToTransaction(&ar, jcshms)
+				ar.JanQuantity = ar.DatQuantity * jcshms.JA008.Float64
+				ar.YjQuantity = ar.DatQuantity * jcshms.JC044
+			} else {
+				ar.ProcessFlagMA = FlagProvisional
+				ar.ProcessingStatus = sql.NullString{String: "provisional", Valid: true}
+
+				newYj, productCode, err := createProvisionalMaster(tx, key, ar.JanCode, ar.ProductName, mastersMap)
+				if err != nil {
+					return nil, err
+				}
+				ar.YjCode = newYj
+				ar.JanCode = productCode
+
+				ar.JanQuantity, ar.YjQuantity = 0, 0
+			}
+		}
+		finalRecords = append(finalRecords, ar)
+	}
+	return finalRecords, nil
+}
+
+
+----- C:\Dev\KARASHI\central\provisional_master.go -----
+// File: central/provisional_master.go (修正版)
+package central
+
+import (
+	"database/sql"
+	"fmt"
+	"karashi/db"
+	"karashi/model"
+)
+
+// createProvisionalMasterは、暫定マスターを作成し、メモリ上のマップを更新する共通関数です。
+func createProvisionalMaster(
+	tx *sql.Tx,
+	key string,
+	janCode string,
+	productName string,
+	mastersMap map[string]*model.ProductMaster,
+) (string, string, error) { // yjCodeとproductCodeを返します
+
+	// ★★★ 呼び出し方を修正: プレフィックス"MA2Y"とパディング8桁を追加 ★★★
+	newYj, err := db.NextSequenceInTx(tx, "MA2Y", "MA2Y", 8)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to get next sequence for provisional master: %w", err)
+	}
+
+	productCode := janCode
+	if key != janCode {
+		productCode = key
+	}
+
+	minMasterInput := model.ProductMasterInput{
+		ProductCode: productCode,
+		YjCode:      newYj,
+		ProductName: productName,
+		Origin:      "PROVISIONAL",
+	}
+
+	if err := db.CreateProductMasterInTx(tx, minMasterInput); err != nil {
+		return "", "", fmt.Errorf("failed to create provisional master in tx for key %s: %w", key, err)
+	}
+
+	newMasterForMap := &model.ProductMaster{
+		ProductCode: minMasterInput.ProductCode,
+		YjCode:      minMasterInput.YjCode,
+		ProductName: minMasterInput.ProductName,
+		Origin:      minMasterInput.Origin,
+	}
+	mastersMap[key] = newMasterForMap
+
+	return newYj, productCode, nil
+}
+
+
+----- C:\Dev\KARASHI\central\usage_processor.go -----
+// File: central/usage_processor.go (修正版)
+package central
+
+import (
+	"database/sql"
+	"fmt"
+	"karashi/db"
+	"karashi/mappers"
+	"karashi/model"
+)
+
+func ProcessUsageRecords(tx *sql.Tx, conn *sql.DB, records []model.UnifiedInputRecord) ([]model.TransactionRecord, error) {
+	if len(records) == 0 {
+		return []model.TransactionRecord{}, nil
+	}
+
+	keySet := make(map[string]struct{})
+	janSet := make(map[string]struct{})
+	for _, rec := range records {
+		if rec.JanCode != "" {
+			janSet[rec.JanCode] = struct{}{}
+		}
+		key := rec.JanCode
+		if key == "" {
+			key = fmt.Sprintf("9999999999999%s", rec.ProductName)
+		}
+		if key != "" {
+			keySet[key] = struct{}{}
+		}
+	}
+	keyList := make([]string, 0, len(keySet))
+	for key := range keySet {
+		keyList = append(keyList, key)
+	}
+	janList := make([]string, 0, len(janSet))
+	for jan := range janSet {
+		janList = append(janList, jan)
+	}
+
+	mastersMap, err := db.GetProductMastersByCodesMap(conn, keyList)
+	if err != nil {
+		return nil, fmt.Errorf("failed to bulk get product masters: %w", err)
+	}
+	jcshmsMap, err := db.GetJcshmsByCodesMap(conn, janList)
+	if err != nil {
+		return nil, fmt.Errorf("failed to bulk get jcshms: %w", err)
+	}
+
+	var finalRecords []model.TransactionRecord
+	for _, rec := range records {
+		ar := model.TransactionRecord{
+			TransactionDate: rec.Date,
+			Flag:            3,
+			JanCode:         rec.JanCode,
+			YjCode:          rec.YjCode,
+			ProductName:     rec.ProductName,
+			YjQuantity:      rec.YjQuantity,
+			YjUnitName:      rec.YjUnitName,
+		}
+
+		key := ar.JanCode
+		isSyntheticKey := false
+		if key == "" {
+			key = fmt.Sprintf("9999999999999%s", ar.ProductName)
+			isSyntheticKey = true
+		}
+
+		if master, ok := mastersMap[key]; ok {
+			if master.Origin == "JCSHMS" {
+				ar.ProcessFlagMA = FlagComplete
+				ar.ProcessingStatus = sql.NullString{String: "completed", Valid: true}
+			} else {
+				ar.ProcessFlagMA = FlagProvisional
+				ar.ProcessingStatus = sql.NullString{String: "provisional", Valid: true}
+			}
+
+			// ★★★ ここからJAN数量の計算ロジックを修正 ★★★
+			if master.JanPackInnerQty > 0 {
+				ar.JanQuantity = ar.YjQuantity / master.JanPackInnerQty
+			} else {
+				ar.JanQuantity = ar.YjQuantity // ゼロ除算を避ける
+			}
+			// ★★★ ここまで ★★★
+
+			mappers.MapProductMasterToTransaction(&ar, master)
+			ar.JanCode = master.ProductCode
+		} else {
+			if jcshms, ok := jcshmsMap[ar.JanCode]; ok && jcshms.JC018 != "" {
+				ar.ProcessFlagMA = FlagComplete
+				ar.ProcessingStatus = sql.NullString{String: "completed", Valid: true}
+				yjCode := jcshms.JC009
+				if yjCode == "" {
+					newYj, _ := db.NextSequenceInTx(tx, "MA2Y", "MA2Y", 8)
+					yjCode = newYj
+				}
+				ar.YjCode = yjCode
+				mappers.CreateMasterFromJcshmsInTx(tx, ar.JanCode, yjCode, jcshms)
+				mappers.MapJcshmsToTransaction(&ar, jcshms)
+
+				// ★★★ ここからJAN数量の計算ロジックを修正 ★★★
+				if jcshms.JA006.Float64 > 0 {
+					ar.JanQuantity = ar.YjQuantity / jcshms.JA006.Float64
+				} else {
+					ar.JanQuantity = ar.YjQuantity // ゼロ除算を避ける
+				}
+				// ★★★ ここまで ★★★
+
+			} else {
+				ar.ProcessFlagMA = FlagProvisional
+				ar.ProcessingStatus = sql.NullString{String: "provisional", Valid: true}
+
+				janForMaster := ar.JanCode
+				if isSyntheticKey {
+					janForMaster = ""
+				}
+				newYj, productCode, err := createProvisionalMaster(tx, key, janForMaster, ar.ProductName, mastersMap)
+				if err != nil {
+					return nil, err
+				}
+				ar.YjCode = newYj
+				ar.JanCode = productCode
+
+				// 暫定マスターには包装数量がないため、YjQuantityをコピー
+				ar.JanQuantity = ar.YjQuantity
+			}
+		}
+		finalRecords = append(finalRecords, ar)
+	}
+
+	return finalRecords, nil
+}
+
+
+----- C:\Dev\KARASHI\dat\handler.go -----
+// File: dat/handler.go (最終修正版)
+package dat
+
+import (
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"karashi/central"
+	"karashi/db"
+	"karashi/model"
+	"log"
+	"net/http"
+)
+
+func UploadDatHandler(conn *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if err := r.ParseMultipartForm(32 << 20); err != nil {
+			http.Error(w, "File upload error: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		defer r.MultipartForm.RemoveAll()
+
+		var allParsedRecords []model.UnifiedInputRecord
+		for _, fileHeader := range r.MultipartForm.File["file"] {
+			file, err := fileHeader.Open()
+			if err != nil {
+				log.Printf("Failed to open file %s: %v", fileHeader.Filename, err)
+				continue
+			}
+			defer file.Close()
+			parsed, err := ParseDat(file)
+			if err != nil {
+				log.Printf("Failed to parse file %s: %v", fileHeader.Filename, err)
+				continue
+			}
+			allParsedRecords = append(allParsedRecords, parsed...)
+		}
+
+		// ▼▼▼ 修正点: 重複除去処理を追加 ▼▼▼
+		filteredRecords := removeDatDuplicates(allParsedRecords)
+
+		tx, err := conn.Begin()
+		if err != nil {
+			http.Error(w, "Failed to begin transaction", http.StatusInternalServerError)
+			return
+		}
+		defer tx.Rollback()
+
+		// ▼▼▼ 修正点: 重複除去後のリストを渡す ▼▼▼
+		finalRecords, err := central.ProcessDatRecords(tx, conn, filteredRecords)
+		if err != nil {
+			log.Printf("central.ProcessDatRecords failed: %v", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		if len(finalRecords) > 0 {
+			if err := db.PersistTransactionRecordsInTx(tx, finalRecords); err != nil {
+				log.Printf("db.PersistTransactionRecordsInTx error: %v", err)
+				http.Error(w, "internal server error", http.StatusInternalServerError)
+				return
+			}
+		}
+
+		if err := tx.Commit(); err != nil {
+			log.Printf("transaction commit error: %v", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"message": "Parsed and processed DAT files successfully",
+			"records": finalRecords,
+		})
+	}
+}
+
+// ▼▼▼ 修正点: 重複除去のための関数を追加 ▼▼▼
+func removeDatDuplicates(records []model.UnifiedInputRecord) []model.UnifiedInputRecord {
+	seen := make(map[string]struct{})
+	var result []model.UnifiedInputRecord
+
+	for _, r := range records {
+		key := fmt.Sprintf("%s|%s|%s|%s", r.Date, r.ClientCode, r.ReceiptNumber, r.LineNumber)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, r)
+	}
+	return result
+}
+
+
+----- C:\Dev\KARASHI\dat\parser.go -----
+// File: dat/parser.go
+package dat
+
+import (
+	"bufio"
+	"io"
+	"karashi/model"
+	"strconv"
+	"strings"
+
+	"golang.org/x/text/encoding/japanese"
+	"golang.org/x/text/transform"
+)
+
+// ParseDatは、固定長のDATファイルからレコードを抽出し、UnifiedInputRecordのスライスを返します。
+func ParseDat(r io.Reader) ([]model.UnifiedInputRecord, error) {
+	scanner := bufio.NewScanner(r)
+	var records []model.UnifiedInputRecord
+	var currentWholesale string
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if len(line) == 0 {
+			continue
+		}
+
+		switch line[0:1] {
+		case "S":
+			if len(line) >= 13 {
+				currentWholesale = strings.TrimSpace(line[2:13])
+			}
+		case "D":
+			if len(line) < 121 {
+				line += strings.Repeat(" ", 121-len(line))
+			}
+
+			// 型変換をここで行う
+			productNameSJIS := line[38:78]
+			utf8Bytes, _, _ := transform.Bytes(japanese.ShiftJIS.NewDecoder(), []byte(productNameSJIS))
+
+			flag, _ := strconv.Atoi(strings.TrimSpace(line[3:4]))
+			datqty, _ := strconv.ParseFloat(strings.TrimSpace(line[78:83]), 64)
+			unitprice, _ := strconv.ParseFloat(strings.TrimSpace(line[83:92]), 64)
+			subtotal, _ := strconv.ParseFloat(strings.TrimSpace(line[92:101]), 64)
+
+			// UnifiedInputRecordを直接構築
+			rec := model.UnifiedInputRecord{
+				ClientCode:    currentWholesale,
+				Flag:          flag,
+				Date:          strings.TrimSpace(line[4:12]),
+				ReceiptNumber: strings.TrimSpace(line[12:22]),
+				LineNumber:    strings.TrimSpace(line[22:24]),
+				JanCode:       strings.TrimSpace(line[25:38]),
+				ProductName:   strings.TrimSpace(string(utf8Bytes)),
+				DatQuantity:   datqty,
+				UnitPrice:     unitprice,
+				Subtotal:      subtotal,
+				ExpiryDate:    strings.TrimSpace(line[109:115]), // 文字列として直接格納
+				LotNumber:     strings.TrimSpace(line[115:121]),
+			}
+			records = append(records, rec)
+		}
+	}
+	return records, scanner.Err()
+}
+
+
+----- C:\Dev\KARASHI\db\aggregation.go -----
+// File: db/aggregation.go (最終修正版)
+package db
+
+import (
+	"database/sql"
+	"fmt"
+	"karashi/model"
+	"strings"
+)
+
+// GetAggregatedTransactions はフィルターに基づいて集計結果を返します
+func GetAggregatedTransactions(conn *sql.DB, filters model.AggregationFilters) ([]model.YJGroup, error) {
+	// --- Step 1: マスター関連のフィルターで製品リストを作成 ---
+	masterQuery := `SELECT ` + selectColumns + ` FROM product_master p WHERE 1=1 `
+	masterArgs := []interface{}{}
+
+	if filters.KanaName != "" {
+		masterQuery += " AND p.kana_name LIKE ? "
+		masterArgs = append(masterArgs, "%"+filters.KanaName+"%")
+	}
+	if len(filters.DrugTypes) > 0 && filters.DrugTypes[0] != "" {
+		var conditions []string
+		flagMap := map[string]string{
+			"poison": "p.flag_poison = 1", "deleterious": "p.flag_deleterious = 1", "narcotic": "p.flag_narcotic = 1",
+			"psychotropic1": "p.flag_psychotropic = 1", "psychotropic2": "p.flag_psychotropic = 2", "psychotropic3": "p.flag_psychotropic = 3",
+			"stimulant": "p.flag_stimulant = 1", "stimulant_raw": "p.flag_stimulant_raw = 1",
+		}
+		for _, dt := range filters.DrugTypes {
+			if condition, ok := flagMap[dt]; ok {
+				conditions = append(conditions, condition)
+			}
+		}
+		if len(conditions) > 0 {
+			masterQuery += " AND (" + strings.Join(conditions, " OR ") + ")"
+		}
+	}
+
+	masterRows, err := conn.Query(masterQuery, masterArgs...)
+	if err != nil {
+		return nil, fmt.Errorf("aggregation master query failed: %w", err)
+	}
+	defer masterRows.Close()
+
+	var allMasters []*model.ProductMaster
+	productCodes := []string{}
+	productCodeSet := make(map[string]struct{})
+
+	for masterRows.Next() {
+		m, err := scanProductMaster(masterRows)
+		if err != nil {
+			return nil, err
+		}
+		allMasters = append(allMasters, m)
+		if _, ok := productCodeSet[m.ProductCode]; !ok {
+			productCodeSet[m.ProductCode] = struct{}{}
+			productCodes = append(productCodes, m.ProductCode)
+		}
+	}
+	if len(allMasters) == 0 {
+		return []model.YJGroup{}, nil
+	}
+
+	// --- Step 2: 期間フィルターでトランザクションを取得し、製品コードごとにまとめる ---
+	transactionsByProductCode := make(map[string][]*model.TransactionRecord)
+	if len(productCodes) > 0 {
+		transactionQuery := `SELECT ` + TransactionColumns + ` FROM transaction_records
+			WHERE jan_code IN (?` + strings.Repeat(",?", len(productCodes)-1) + `)`
+
+		txArgs := []interface{}{}
+		for _, pc := range productCodes {
+			txArgs = append(txArgs, pc)
+		}
+
+		if filters.StartDate != "" {
+			transactionQuery += " AND transaction_date >= ?"
+			txArgs = append(txArgs, filters.StartDate)
+		}
+		if filters.EndDate != "" {
+			transactionQuery += " AND transaction_date <= ?"
+			txArgs = append(txArgs, filters.EndDate)
+		}
+
+		// ▼▼▼ 修正点: 日付順ソートを追加 ▼▼▼
+		transactionQuery += " ORDER BY transaction_date"
+
+		txRows, err := conn.Query(transactionQuery, txArgs...)
+		if err != nil {
+			return nil, fmt.Errorf("aggregation transaction query failed: %w", err)
+		}
+		defer txRows.Close()
+
+		for txRows.Next() {
+			t, err := ScanTransactionRecord(txRows)
+			if err != nil {
+				return nil, err
+			}
+			transactionsByProductCode[t.JanCode] = append(transactionsByProductCode[t.JanCode], t)
+		}
+	}
+
+	// --- Step 3: YJコード -> 包装表記 の階層でグループを正しく統合 ---
+	yjGroupMap := make(map[string]*model.YJGroup)
+
+	for _, m := range allMasters {
+		if m.YjCode == "" {
+			continue
+		}
+
+		if _, ok := yjGroupMap[m.YjCode]; !ok {
+			yjGroupMap[m.YjCode] = &model.YJGroup{
+				YjCode:        m.YjCode,
+				ProductName:   m.ProductName,
+				PackageGroups: []model.PackageGroup{},
+			}
+		}
+
+		packageKey := fmt.Sprintf("%s %.2f%s", m.PackageSpec, m.JanPackInnerQty, m.YjUnitName)
+		var targetPkg *model.PackageGroup
+
+		for i := range yjGroupMap[m.YjCode].PackageGroups {
+			if yjGroupMap[m.YjCode].PackageGroups[i].PackageKey == packageKey {
+				targetPkg = &yjGroupMap[m.YjCode].PackageGroups[i]
+				break
+			}
+		}
+
+		if targetPkg == nil {
+			newPkg := model.PackageGroup{
+				PackageKey:   packageKey,
+				Transactions: []model.TransactionRecord{},
+			}
+			yjGroupMap[m.YjCode].PackageGroups = append(yjGroupMap[m.YjCode].PackageGroups, newPkg)
+			targetPkg = &yjGroupMap[m.YjCode].PackageGroups[len(yjGroupMap[m.YjCode].PackageGroups)-1]
+		}
+
+		if transactions, ok := transactionsByProductCode[m.ProductCode]; ok {
+			for _, t := range transactions {
+				targetPkg.Transactions = append(targetPkg.Transactions, *t)
+			}
+		}
+	}
+
+	// --- Step 4: 集計計算 ---
+	var result []model.YJGroup
+	for _, yjGroup := range yjGroupMap {
+		for i := range yjGroup.PackageGroups {
+			pkgGroup := &yjGroup.PackageGroups[i]
+			for _, t := range pkgGroup.Transactions {
+				signedJanQty, signedYjQty := t.JanQuantity, t.YjQuantity
+				// ▼▼▼ 修正点: 符号反転の条件を「2 または 3」に変更 ▼▼▼
+				if t.Flag == 2 || t.Flag == 3 {
+					signedJanQty = -signedJanQty
+					signedYjQty = -signedYjQty
+				}
+				pkgGroup.TotalJanQty += signedJanQty
+				pkgGroup.TotalYjQty += signedYjQty
+				if t.Flag == 3 {
+					if -signedJanQty > pkgGroup.MaxUsageJanQty {
+						pkgGroup.MaxUsageJanQty = -signedJanQty
+					}
+					if -signedYjQty > pkgGroup.MaxUsageYjQty {
+						pkgGroup.MaxUsageYjQty = -signedYjQty
+					}
+				}
+			}
+		}
+
+		for _, pg := range yjGroup.PackageGroups {
+			yjGroup.TotalJanQty += pg.TotalJanQty
+			yjGroup.TotalYjQty += pg.TotalYjQty
+			if pg.MaxUsageYjQty > yjGroup.MaxUsageYjQty {
+				yjGroup.MaxUsageYjQty = pg.MaxUsageYjQty
+			}
+		}
+		result = append(result, *yjGroup)
+	}
+
+	// --- Step 5: 「動きのない品目」フィルターを適用 ---
+	var filteredResult []model.YJGroup
+	for _, yjGroup := range result {
+		totalTransactions := 0
+		for _, pg := range yjGroup.PackageGroups {
+			totalTransactions += len(pg.Transactions)
+		}
+
+		if filters.NoMovement {
+			if totalTransactions == 0 {
+				filteredResult = append(filteredResult, yjGroup)
+			}
+		} else {
+			if totalTransactions > 0 {
+				filteredResult = append(filteredResult, yjGroup)
+			}
+		}
+	}
+
+	return filteredResult, nil
+}
+
+
+----- C:\Dev\KARASHI\db\clients.go -----
+// File: db/clients.go (新規作成)
+package db
+
+import (
+	"database/sql"
+	"fmt"
+	"karashi/model"
+)
+
+// GetAllClientsは、得意先マスターから全件取得します。
+func GetAllClients(conn *sql.DB) ([]model.Client, error) {
+	rows, err := conn.Query("SELECT client_code, client_name FROM client_master ORDER BY client_code")
+	if err != nil {
+		return nil, fmt.Errorf("failed to get all clients: %w", err)
+	}
+	defer rows.Close()
+
+	var clients []model.Client
+	for rows.Next() {
+		var c model.Client
+		if err := rows.Scan(&c.Code, &c.Name); err != nil {
+			return nil, err
+		}
+		clients = append(clients, c)
+	}
+	return clients, nil
+}
+
+
+----- C:\Dev\KARASHI\db\jcshms.go -----
+// File: db/jcshms.go (修正版)
+package db
+
+import (
+	"database/sql"
+	"fmt"
+	"karashi/model"
+	"log" // ★ ログ出力のためにインポート
+	"strconv"
+	"strings"
+)
+
+// (GetJcshmsByJan関数は変更なし)
+func GetJcshmsByJan(conn *sql.DB, jan string) (*model.JCShms, error) {
+	// ...
+	return nil, nil
+}
+
+func GetJcshmsByCodesMap(conn *sql.DB, jans []string) (map[string]*model.JCShms, error) {
+	if len(jans) == 0 {
+		return make(map[string]*model.JCShms), nil
+	}
+
+	results := make(map[string]*model.JCShms)
+
+	inClause := `(?` + strings.Repeat(",?", len(jans)-1) + `)`
+	args := make([]interface{}, len(jans))
+	for i, jan := range jans {
+		args[i] = jan
+		results[jan] = &model.JCShms{}
+	}
+
+	q1 := `SELECT JC000, JC009, JC018, JC022, JC030, JC037, JC039, JC044, JC050,
+	              JC061, JC062, JC063, JC064, JC065, JC066
+	       FROM jcshms WHERE JC000 IN ` + inClause
+
+	rows1, err := conn.Query(q1, args...)
+	if err != nil {
+		return nil, fmt.Errorf("jcshms bulk search failed: %w", err)
+	}
+	defer rows1.Close()
+
+	for rows1.Next() {
+		var jan string
+		var jcshmsPart model.JCShms
+		var jc050 sql.NullString // ★★★ JC050を安全に読み込むため、一時的に文字列型で受け取る
+
+		if err := rows1.Scan(&jan, &jcshmsPart.JC009, &jcshmsPart.JC018, &jcshmsPart.JC022, &jcshmsPart.JC030,
+			&jcshmsPart.JC037, &jcshmsPart.JC039, &jcshmsPart.JC044, &jc050, // ★★★ スキャン先をjc050に変更
+			&jcshmsPart.JC061, &jcshmsPart.JC062, &jcshmsPart.JC063, &jcshmsPart.JC064, &jcshmsPart.JC065, &jcshmsPart.JC066,
+		); err != nil {
+			return nil, err
+		}
+
+		res := results[jan]
+		res.JC009 = jcshmsPart.JC009
+		res.JC018 = jcshmsPart.JC018
+		res.JC022 = jcshmsPart.JC022
+		res.JC030 = jcshmsPart.JC030
+		res.JC037 = jcshmsPart.JC037
+		res.JC039 = jcshmsPart.JC039
+		res.JC044 = jcshmsPart.JC044
+		res.JC061 = jcshmsPart.JC061
+		res.JC062 = jcshmsPart.JC062
+		res.JC063 = jcshmsPart.JC063
+		res.JC064 = jcshmsPart.JC064
+		res.JC065 = jcshmsPart.JC065
+		res.JC066 = jcshmsPart.JC066
+
+		// ★★★ ここからがJC050を安全に数値へ変換する処理 ★★★
+		val, err := strconv.ParseFloat(jc050.String, 64)
+		if err != nil {
+			// 変換に失敗した場合(空文字など)は0を設定し、ログを出力
+			res.JC050 = 0
+			if jc050.String != "" { // 完全な空文字はログに出さない場合
+				log.Printf("[WARN] JC050のデータが不正なため0に変換しました。製品名: %s, 元の値: '%s'", res.JC018, jc050.String)
+			}
+		} else {
+			// 変換に成功した場合はその値を設定
+			res.JC050 = val
+		}
+		// ★★★ ここまで ★★★
+	}
+
+	q2 := `SELECT JA001, JA006, JA007, JA008 FROM jancode WHERE JA001 IN ` + inClause
+
+	rows2, err := conn.Query(q2, args...)
+	if err != nil {
+		return nil, fmt.Errorf("jancode bulk search failed: %w", err)
+	}
+	defer rows2.Close()
+
+	for rows2.Next() {
+		var jan string
+		var jaPart struct {
+			JA006 sql.NullFloat64
+			JA007 sql.NullString
+			JA008 sql.NullFloat64
+		}
+		if err := rows2.Scan(&jan, &jaPart.JA006, &jaPart.JA007, &jaPart.JA008); err != nil {
+			return nil, err
+		}
+		results[jan].JA006 = jaPart.JA006
+		results[jan].JA007 = jaPart.JA007
+		results[jan].JA008 = jaPart.JA008
+	}
+
+	return results, nil
+}
+
+
+----- C:\Dev\KARASHI\db\product_master.go -----
+// File: db/product_master.go (Corrected)
+package db
+
+import (
+	"database/sql"
+	"fmt"
+	"karashi/model"
+	"karashi/units"
+	"strings"
+)
+
+// selectColumns defines the common column list for reuse.
+const selectColumns = `
+	product_code, yj_code, product_name, origin, kana_name, maker_name, package_spec, 
+	yj_unit_name, yj_pack_unit_qty, flag_poison, flag_deleterious, flag_narcotic, 
+	flag_psychotropic, flag_stimulant, flag_stimulant_raw, jan_pack_inner_qty, 
+	jan_unit_code, jan_pack_unit_qty, reorder_point, nhi_price`
+
+// scanProductMaster is a helper function to scan a row into a ProductMaster struct.
+func scanProductMaster(row interface{ Scan(...interface{}) error }) (*model.ProductMaster, error) {
+	var m model.ProductMaster
+	err := row.Scan(
+		&m.ProductCode, &m.YjCode, &m.ProductName, &m.Origin, &m.KanaName, &m.MakerName, &m.PackageSpec,
+		&m.YjUnitName, &m.YjPackUnitQty, &m.FlagPoison, &m.FlagDeleterious, &m.FlagNarcotic,
+		&m.FlagPsychotropic, &m.FlagStimulant, &m.FlagStimulantRaw, &m.JanPackInnerQty,
+		&m.JanUnitCode, &m.JanPackUnitQty, &m.ReorderPoint, &m.NhiPrice,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &m, nil
+}
+
+// GetProductMasterByCode retrieves a master record by its product code.
+func GetProductMasterByCode(conn *sql.DB, code string) (*model.ProductMaster, error) {
+	q := `SELECT ` + selectColumns + ` FROM product_master WHERE product_code = ? LIMIT 1`
+	m, err := scanProductMaster(conn.QueryRow(q, code))
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("GetProductMasterByCode failed: %w", err)
+	}
+	return m, nil
+}
+
+// GetProductMastersByCodesMap returns a map of master records for multiple product codes.
+func GetProductMastersByCodesMap(conn *sql.DB, codes []string) (map[string]*model.ProductMaster, error) {
+	if len(codes) == 0 {
+		return make(map[string]*model.ProductMaster), nil
+	}
+	q := `SELECT ` + selectColumns + ` FROM product_master WHERE product_code IN (?` + strings.Repeat(",?", len(codes)-1) + `)`
+	args := make([]interface{}, len(codes))
+	for i, code := range codes {
+		args[i] = code
+	}
+	rows, err := conn.Query(q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query for masters by codes failed: %w", err)
+	}
+	defer rows.Close()
+	mastersMap := make(map[string]*model.ProductMaster)
+	for rows.Next() {
+		m, err := scanProductMaster(rows)
+		if err != nil {
+			return nil, err
+		}
+		mastersMap[m.ProductCode] = m
+	}
+	return mastersMap, nil
+}
+
+// GetProductMasterByName retrieves a master record by its product name.
+func GetProductMasterByName(conn *sql.DB, name string) (*model.ProductMaster, error) {
+	q := `SELECT ` + selectColumns + ` FROM product_master WHERE product_name = ? LIMIT 1`
+	m, err := scanProductMaster(conn.QueryRow(q, name))
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("GetProductMasterByName failed: %w", err)
+	}
+	return m, nil
+}
+
+// CreateProductMasterInTx creates a master record within an existing transaction.
+func CreateProductMasterInTx(tx *sql.Tx, rec model.ProductMasterInput) error {
+	const q = `INSERT INTO product_master (
+			product_code, yj_code, product_name, origin, kana_name, maker_name, package_spec, 
+			yj_unit_name, yj_pack_unit_qty, flag_poison, flag_deleterious, flag_narcotic, 
+			flag_psychotropic, flag_stimulant, flag_stimulant_raw, jan_pack_inner_qty, 
+			jan_unit_code, jan_pack_unit_qty, reorder_point, nhi_price
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	_, err := tx.Exec(q,
+		rec.ProductCode, rec.YjCode, rec.ProductName, rec.Origin, rec.KanaName, rec.MakerName, rec.PackageSpec,
+		rec.YjUnitName, rec.YjPackUnitQty, rec.FlagPoison, rec.FlagDeleterious, rec.FlagNarcotic,
+		rec.FlagPsychotropic, rec.FlagStimulant, rec.FlagStimulantRaw, rec.JanPackInnerQty,
+		rec.JanUnitCode, rec.JanPackUnitQty, rec.ReorderPoint, rec.NhiPrice,
+	)
+	if err != nil {
+		return fmt.Errorf("CreateProductMasterInTx failed: %w", err)
+	}
+	return nil
+}
+
+// ★★★ THIS FUNCTION IS NEW/REPLACES UpdateProductMasterInTx ★★★
+// UpsertProductMasterInTx updates a master record or inserts it if it doesn't exist.
+func UpsertProductMasterInTx(tx *sql.Tx, rec model.ProductMasterInput) error {
+	const q = `INSERT INTO product_master (
+            product_code, yj_code, product_name, origin, kana_name, maker_name, package_spec, 
+            yj_unit_name, yj_pack_unit_qty, flag_poison, flag_deleterious, flag_narcotic, 
+            flag_psychotropic, flag_stimulant, flag_stimulant_raw, jan_pack_inner_qty, 
+            jan_unit_code, jan_pack_unit_qty, reorder_point, nhi_price
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(product_code) DO UPDATE SET
+            yj_code=excluded.yj_code, product_name=excluded.product_name, origin=excluded.origin, 
+            kana_name=excluded.kana_name, maker_name=excluded.maker_name, package_spec=excluded.package_spec, 
+            yj_unit_name=excluded.yj_unit_name, yj_pack_unit_qty=excluded.yj_pack_unit_qty, 
+            flag_poison=excluded.flag_poison, flag_deleterious=excluded.flag_deleterious, 
+            flag_narcotic=excluded.flag_narcotic, flag_psychotropic=excluded.flag_psychotropic, 
+            flag_stimulant=excluded.flag_stimulant, flag_stimulant_raw=excluded.flag_stimulant_raw, 
+            jan_pack_inner_qty=excluded.jan_pack_inner_qty, jan_unit_code=excluded.jan_unit_code, 
+            jan_pack_unit_qty=excluded.jan_pack_unit_qty, reorder_point=excluded.reorder_point, 
+            nhi_price=excluded.nhi_price`
+
+	_, err := tx.Exec(q,
+		rec.ProductCode, rec.YjCode, rec.ProductName, rec.Origin, rec.KanaName, rec.MakerName, rec.PackageSpec,
+		rec.YjUnitName, rec.YjPackUnitQty, rec.FlagPoison, rec.FlagDeleterious, rec.FlagNarcotic,
+		rec.FlagPsychotropic, rec.FlagStimulant, rec.FlagStimulantRaw, rec.JanPackInnerQty,
+		rec.JanUnitCode, rec.JanPackUnitQty, rec.ReorderPoint, rec.NhiPrice,
+	)
+	if err != nil {
+		return fmt.Errorf("UpsertProductMasterInTx failed: %w", err)
+	}
+	return nil
+}
+
+// GetProductMasterByCodeInTx retrieves a master record by its product code within an existing transaction.
+func GetProductMasterByCodeInTx(tx *sql.Tx, code string) (*model.ProductMaster, error) {
+	q := `SELECT ` + selectColumns + ` FROM product_master WHERE product_code = ? LIMIT 1`
+	m, err := scanProductMaster(tx.QueryRow(q, code))
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("GetProductMasterByCodeInTx failed: %w", err)
+	}
+	return m, nil
+}
+
+// GetAllProductMasters retrieves all product master records.
+func GetAllProductMasters(conn *sql.DB) ([]*model.ProductMaster, error) {
+	q := `SELECT ` + selectColumns + ` FROM product_master ORDER BY kana_name`
+
+	rows, err := conn.Query(q)
+	if err != nil {
+		return nil, fmt.Errorf("GetAllProductMasters failed: %w", err)
+	}
+	defer rows.Close()
+
+	var masters []*model.ProductMaster
+	for rows.Next() {
+		m, err := scanProductMaster(rows)
+		if err != nil {
+			return nil, err
+		}
+		masters = append(masters, m)
+	}
+	return masters, nil
+}
+
+// SearchProductMastersByName returns a list of master records that match a partial product name.
+func SearchProductMastersByName(conn *sql.DB, nameQuery string) ([]*model.ProductMaster, error) {
+	q := `SELECT ` + selectColumns + ` FROM product_master WHERE product_name LIKE ? OR kana_name LIKE ? ORDER BY kana_name LIMIT 100`
+
+	rows, err := conn.Query(q, "%"+nameQuery+"%", "%"+nameQuery+"%")
+	if err != nil {
+		return nil, fmt.Errorf("SearchProductMastersByName failed: %w", err)
+	}
+	defer rows.Close()
+
+	var masters []*model.ProductMaster
+	for rows.Next() {
+		m, err := scanProductMaster(rows)
+		if err != nil {
+			return nil, err
+		}
+		masters = append(masters, m)
+	}
+	return masters, nil
+}
+
+// GetEditableProductMasters fetches all non-JCSHMS product masters.
+func GetEditableProductMasters(conn *sql.DB) ([]model.ProductMasterView, error) {
+	q := `SELECT ` + selectColumns + ` FROM product_master WHERE origin != 'JCSHMS' ORDER BY kana_name`
+
+	rows, err := conn.Query(q)
+	if err != nil {
+		return nil, fmt.Errorf("GetEditableProductMasters failed: %w", err)
+	}
+	defer rows.Close()
+
+	var mastersView []model.ProductMasterView
+	for rows.Next() {
+		m, err := scanProductMaster(rows)
+		if err != nil {
+			return nil, err
+		}
+
+		tempJcshms := model.JCShms{
+			JC037: m.PackageSpec,
+			JC039: m.YjUnitName,
+			JC044: m.YjPackUnitQty,
+			JA006: sql.NullFloat64{Float64: m.JanPackInnerQty, Valid: true},
+			JA008: sql.NullFloat64{Float64: m.JanPackUnitQty, Valid: true},
+			JA007: sql.NullString{String: fmt.Sprintf("%d", m.JanUnitCode), Valid: true},
+		}
+		formattedSpec := units.FormatPackageSpec(&tempJcshms)
+
+		mastersView = append(mastersView, model.ProductMasterView{
+			ProductMaster:        *m,
+			FormattedPackageSpec: formattedSpec,
+		})
+	}
+	return mastersView, nil
+}
+
+
+----- C:\Dev\KARASHI\db\search.go -----
+// File: db/search.go (修正版)
+package db
+
+import (
+	"database/sql"
+	"fmt"
+	"karashi/model"
+	"karashi/units"
+	"log" // ★ ログ出力のためにインポート
+	"strconv"
+)
+
+func SearchJcshmsByName(conn *sql.DB, nameQuery string) ([]model.ProductMasterView, error) {
+	const q = `
+		SELECT
+			j.JC000, j.JC009, j.JC018, j.JC022, j.JC030, j.JC037, j.JC039,
+			j.JC044, j.JC050,
+			ja.JA006, ja.JA008, ja.JA007
+		FROM
+			jcshms AS j
+		LEFT JOIN
+			jancode AS ja ON j.JC000 = ja.JA001
+		WHERE
+			j.JC018 LIKE ? OR j.JC022 LIKE ?
+		ORDER BY
+			j.JC022
+		LIMIT 500`
+
+	rows, err := conn.Query(q, "%"+nameQuery+"%", "%"+nameQuery+"%")
+	if err != nil {
+		return nil, fmt.Errorf("SearchJcshmsByName failed: %w", err)
+	}
+	defer rows.Close()
+
+	var results []model.ProductMasterView
+	for rows.Next() {
+		var tempJcshms model.JCShms
+		var jc000, jc009, jc018, jc022, jc030, jc037, jc039 sql.NullString
+		var jc044 sql.NullFloat64
+		var jc050 sql.NullString // ★★★ JC050を安全に読み込むため、一時的に文字列型で受け取る
+
+		if err := rows.Scan(
+			&jc000, &jc009, &jc018, &jc022, &jc030, &jc037, &jc039,
+			&jc044, &jc050, // ★★★ スキャン先をjc050に変更
+			&tempJcshms.JA006, &tempJcshms.JA008, &tempJcshms.JA007,
+		); err != nil {
+			return nil, err
+		}
+
+		tempJcshms.JC037 = jc037.String
+		tempJcshms.JC039 = jc039.String
+		tempJcshms.JC044 = jc044.Float64
+
+		// ★★★ ここからがJC050を安全に数値へ変換する処理 ★★★
+		val, err := strconv.ParseFloat(jc050.String, 64)
+		if err != nil {
+			tempJcshms.JC050 = 0
+			if jc050.String != "" {
+				log.Printf("[WARN] JC050のデータが不正なため0に変換しました。製品名: %s, 元の値: '%s'", jc018.String, jc050.String)
+			}
+		} else {
+			tempJcshms.JC050 = val
+		}
+		// ★★★ ここまで ★★★
+
+		var nhiPrice float64
+		if tempJcshms.JC044 > 0 {
+			nhiPrice = tempJcshms.JC050 / tempJcshms.JC044
+		}
+
+		pkg := units.FormatPackageSpec(&tempJcshms)
+
+		yjUnitName := units.ResolveName(jc039.String)
+		janUnitCode := tempJcshms.JA007.String
+		var janUnitName string
+		if janUnitCode == "0" || janUnitCode == "" {
+			janUnitName = yjUnitName
+		} else {
+			janUnitName = units.ResolveName(janUnitCode)
+		}
+
+		view := model.ProductMasterView{
+			ProductMaster: model.ProductMaster{
+				ProductCode:     jc000.String,
+				YjCode:          jc009.String,
+				ProductName:     jc018.String,
+				KanaName:        jc022.String,
+				MakerName:       jc030.String,
+				PackageSpec:     jc037.String,
+				YjUnitName:      yjUnitName,
+				JanUnitName:     janUnitName,
+				YjPackUnitQty:   jc044.Float64,
+				JanPackInnerQty: tempJcshms.JA006.Float64,
+				JanPackUnitQty:  tempJcshms.JA008.Float64,
+				NhiPrice:        nhiPrice,
+			},
+			FormattedPackageSpec: pkg,
+		}
+		results = append(results, view)
+	}
+	return results, nil
+}
+
+
+----- C:\Dev\KARASHI\db\sequence.go -----
+// File: db/sequence.go (修正版)
+package db
+
+import (
+	"database/sql"
+	"fmt"
+)
+
+// NextSequenceInTxは、指定されたシーケンスから次の番号を生成します。
+// 例: (tx, "CL", "CL", 4) -> "CL0001"
+func NextSequenceInTx(tx *sql.Tx, name, prefix string, padding int) (string, error) {
+	var lastNo int
+
+	err := tx.QueryRow("SELECT last_no FROM code_sequences WHERE name = ?", name).Scan(&lastNo)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return "", fmt.Errorf("シーケンス '%s' が見つかりません", name)
+		}
+		return "", fmt.Errorf("シーケンス '%s' の取得に失敗しました: %w", name, err)
+	}
+
+	newNo := lastNo + 1
+
+	_, err = tx.Exec("UPDATE code_sequences SET last_no = ? WHERE name = ?", newNo, name)
+	if err != nil {
+		return "", fmt.Errorf("シーケンス '%s' の更新に失敗しました: %w", name, err)
+	}
+
+	format := fmt.Sprintf("%s%%0%dd", prefix, padding)
+	return fmt.Sprintf(format, newNo), nil
+}
+
+
+----- C:\Dev\KARASHI\db\transaction_records.go -----
+// File: db/transaction_records.go (Corrected)
+package db
+
+import (
+	"database/sql"
+	"fmt"
+	"karashi/model"
+	"log"
+)
+
+// ★★★ EXPORTED by capitalizing the first letter ★★★
+const TransactionColumns = `
+    id, transaction_date, client_code, receipt_number, line_number, flag,
+    jan_code, yj_code, product_name, kana_name, package_form, package_spec, maker_name,
+    dat_quantity, jan_pack_inner_qty, jan_quantity, jan_pack_unit_qty, jan_unit_name, jan_unit_code,
+    yj_quantity, yj_pack_unit_qty, yj_unit_name, unit_price, subtotal,
+    tax_amount, tax_rate, expiry_date, lot_number, flag_poison,
+    flag_deleterious, flag_narcotic, flag_psychotropic, flag_stimulant,
+    flag_stimulant_raw, process_flag_ma, processing_status`
+
+// ★★★ EXPORTED by capitalizing the first letter ★★★
+func ScanTransactionRecord(row interface{ Scan(...interface{}) error }) (*model.TransactionRecord, error) {
+	var r model.TransactionRecord
+	if err := row.Scan(
+		&r.ID, &r.TransactionDate, &r.ClientCode, &r.ReceiptNumber, &r.LineNumber, &r.Flag,
+		&r.JanCode, &r.YjCode, &r.ProductName, &r.KanaName, &r.PackageForm, &r.PackageSpec, &r.MakerName,
+		&r.DatQuantity, &r.JanPackInnerQty, &r.JanQuantity, &r.JanPackUnitQty, &r.JanUnitName, &r.JanUnitCode,
+		&r.YjQuantity, &r.YjPackUnitQty, &r.YjUnitName, &r.UnitPrice, &r.Subtotal,
+		&r.TaxAmount, &r.TaxRate, &r.ExpiryDate, &r.LotNumber, &r.FlagPoison,
+		&r.FlagDeleterious, &r.FlagNarcotic, &r.FlagPsychotropic, &r.FlagStimulant,
+		&r.FlagStimulantRaw, &r.ProcessFlagMA, &r.ProcessingStatus,
+	); err != nil {
+		return nil, err
+	}
+	return &r, nil
+}
+
+// PersistTransactionRecords starts a new transaction to save records.
+func PersistTransactionRecords(conn *sql.DB, records []model.TransactionRecord) error {
+	tx, err := conn.Begin()
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	if err := PersistTransactionRecordsInTx(tx, records); err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}
+
+// PersistTransactionRecordsInTx saves records within an existing transaction.
+func PersistTransactionRecordsInTx(tx *sql.Tx, records []model.TransactionRecord) error {
+	const q = `
+INSERT OR REPLACE INTO transaction_records (
+    transaction_date, client_code, receipt_number, line_number, flag,
+    jan_code, yj_code, product_name, kana_name, package_form, package_spec, maker_name,
+    dat_quantity, jan_pack_inner_qty, jan_quantity, jan_pack_unit_qty, jan_unit_name, jan_unit_code,
+    yj_quantity, yj_pack_unit_qty, yj_unit_name, unit_price, subtotal,
+    tax_amount, tax_rate, expiry_date, lot_number, flag_poison,
+    flag_deleterious, flag_narcotic, flag_psychotropic, flag_stimulant,
+    flag_stimulant_raw, process_flag_ma, processing_status
+) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+
+	stmt, err := tx.Prepare(q)
+	if err != nil {
+		return fmt.Errorf("failed to prepare statement for transaction_records: %w", err)
+	}
+	defer stmt.Close()
+
+	for _, rec := range records {
+		_, err := stmt.Exec(
+			rec.TransactionDate, rec.ClientCode, rec.ReceiptNumber, rec.LineNumber, rec.Flag,
+			rec.JanCode, rec.YjCode, rec.ProductName, rec.KanaName, rec.PackageForm, rec.PackageSpec, rec.MakerName,
+			rec.DatQuantity, rec.JanPackInnerQty, rec.JanQuantity,
+			rec.JanPackUnitQty,
+			rec.JanUnitName, rec.JanUnitCode,
+			rec.YjQuantity, rec.YjPackUnitQty, rec.YjUnitName, rec.UnitPrice, rec.Subtotal,
+			rec.TaxAmount, rec.TaxRate, rec.ExpiryDate, rec.LotNumber, rec.FlagPoison,
+			rec.FlagDeleterious, rec.FlagNarcotic, rec.FlagPsychotropic, rec.FlagStimulant,
+			rec.FlagStimulantRaw, rec.ProcessFlagMA, rec.ProcessingStatus,
+		)
+		if err != nil {
+			log.Printf("!!! FAILED to insert into transaction_records: JAN=%s, Error: %v", rec.JanCode, err)
+			return fmt.Errorf("failed to exec statement for transaction_records (JAN: %s): %w", rec.JanCode, err)
+		}
+	}
+	return nil
+}
+
+// GetReceiptNumbersByDate returns a list of receipt numbers for a given date.
+func GetReceiptNumbersByDate(conn *sql.DB, date string) ([]string, error) {
+	rows, err := conn.Query("SELECT DISTINCT receipt_number FROM transaction_records WHERE transaction_date = ? ORDER BY receipt_number", date)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get receipt numbers by date: %w", err)
+	}
+	defer rows.Close()
+
+	var numbers []string
+	for rows.Next() {
+		var number string
+		if err := rows.Scan(&number); err != nil {
+			return nil, err
+		}
+		numbers = append(numbers, number)
+	}
+	return numbers, nil
+}
+
+// GetTransactionsByReceiptNumber returns all details for a given receipt number.
+func GetTransactionsByReceiptNumber(conn *sql.DB, receiptNumber string) ([]model.TransactionRecord, error) {
+	q := `SELECT ` + TransactionColumns + ` FROM transaction_records WHERE receipt_number = ? ORDER BY line_number`
+
+	rows, err := conn.Query(q, receiptNumber)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get transactions by receipt number: %w", err)
+	}
+	defer rows.Close()
+
+	var records []model.TransactionRecord
+	for rows.Next() {
+		r, err := ScanTransactionRecord(rows)
+		if err != nil {
+			return nil, err
+		}
+		records = append(records, *r)
+	}
+	return records, nil
+}
+
+// DeleteTransactionsByReceiptNumberInTx deletes all records for a given receipt number within a transaction.
+func DeleteTransactionsByReceiptNumberInTx(tx *sql.Tx, receiptNumber string) error {
+	const q = `DELETE FROM transaction_records WHERE receipt_number = ?`
+
+	result, err := tx.Exec(q, receiptNumber)
+	if err != nil {
+		return fmt.Errorf("failed to delete transactions for receipt %s: %w", receiptNumber, err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get rows affected for receipt %s: %w", receiptNumber, err)
+	}
+
+	if rowsAffected == 0 {
+		return fmt.Errorf("no transaction found with receipt number: %s", receiptNumber)
+	}
+
+	return nil
+}
+
+
+----- C:\Dev\KARASHI\db\usage.go -----
+// File: db/usage.go
+package db
+
+import (
+	"database/sql"
+	"fmt"
+)
+
+// DeleteUsageTransactionsInDateRangeは、指定された日付範囲内のUSAGEレコード(flag=3)を削除します。
+func DeleteUsageTransactionsInDateRange(tx *sql.Tx, minDate, maxDate string) error {
+	const q = `DELETE FROM transaction_records WHERE flag = 3 AND transaction_date BETWEEN ? AND ?`
+	_, err := tx.Exec(q, minDate, maxDate)
+	if err != nil {
+		return fmt.Errorf("failed to delete usage transactions: %w", err)
+	}
+	return nil
+}
+
+
+----- C:\Dev\KARASHI\inout\handler.go -----
+// File: inout/handler.go (修正版)
+package inout
+
+import (
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"karashi/db"
+	"karashi/model"
+	"log"
+	"net/http"
+	"time"
+)
+
+// SavePayload はフロントエンドから送られてくるJSONの構造体です
+type SavePayload struct {
+	IsNewClient           bool                      `json:"isNewClient"`
+	ClientCode            string                    `json:"clientCode"`
+	ClientName            string                    `json:"clientName"`
+	TransactionDate       string                    `json:"transactionDate"`
+	TransactionType       string                    `json:"transactionType"`
+	Records               []model.TransactionRecord `json:"records"`
+	OriginalReceiptNumber string                    `json:"originalReceiptNumber"`
+}
+
+// SaveInOutHandler は入出庫データを保存します
+func SaveInOutHandler(conn *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var payload SavePayload
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			http.Error(w, "Invalid request body", http.StatusBadRequest)
+			return
+		}
+
+		tx, err := conn.Begin()
+		if err != nil {
+			http.Error(w, "Failed to start transaction", http.StatusInternalServerError)
+			return
+		}
+		defer tx.Rollback()
+
+		// --- 得意先処理 ---
+		clientCode := payload.ClientCode
+		if payload.IsNewClient {
+			var exists int
+			err := tx.QueryRow("SELECT 1 FROM client_master WHERE client_name = ? LIMIT 1", payload.ClientName).Scan(&exists)
+			if err != sql.ErrNoRows {
+				if err == nil {
+					w.WriteHeader(http.StatusConflict)
+					json.NewEncoder(w).Encode(map[string]string{"message": fmt.Sprintf("得意先名 '%s' は既に使用されています。", payload.ClientName)})
+				} else {
+					http.Error(w, "Failed to check client existence", http.StatusInternalServerError)
+				}
+				return
+			}
+
+			newCode, err := db.NextSequenceInTx(tx, "CL", "CL", 4)
+			if err != nil {
+				http.Error(w, "Failed to generate new client code", http.StatusInternalServerError)
+				return
+			}
+
+			_, err = tx.Exec("INSERT INTO client_master (client_code, client_name) VALUES (?, ?)", newCode, payload.ClientName)
+			if err != nil {
+				http.Error(w, "Failed to create new client", http.StatusInternalServerError)
+				return
+			}
+			clientCode = newCode
+		}
+
+		// --- 伝票番号処理 ---
+		var receiptNumber string
+		dateStr := payload.TransactionDate
+		if dateStr == "" {
+			dateStr = time.Now().Format("20060102")
+		}
+
+		if payload.OriginalReceiptNumber != "" {
+			receiptNumber = payload.OriginalReceiptNumber
+			if err := db.DeleteTransactionsByReceiptNumberInTx(tx, receiptNumber); err != nil {
+				if err.Error() != fmt.Sprintf("no transaction found with receipt number: %s", receiptNumber) {
+					http.Error(w, "Failed to delete original slip for update", http.StatusInternalServerError)
+					return
+				}
+			}
+		} else {
+			var lastSeq int
+			q := `SELECT CAST(SUBSTR(receipt_number, 11) AS INTEGER) FROM transaction_records 
+				  WHERE receipt_number LIKE ? ORDER BY 1 DESC LIMIT 1`
+			err = tx.QueryRow(q, "io"+dateStr+"%").Scan(&lastSeq)
+			if err != nil && err != sql.ErrNoRows {
+				http.Error(w, "Failed to get last receipt number sequence", http.StatusInternalServerError)
+				return
+			}
+			newSeq := lastSeq + 1
+			receiptNumber = fmt.Sprintf("io%s%03d", dateStr, newSeq)
+		}
+
+		// --- レコード保存 ---
+		flagMap := map[string]int{"入庫": 1, "出庫": 2}
+		flag := flagMap[payload.TransactionType]
+
+		for i := range payload.Records {
+			rec := &payload.Records[i]
+			rec.ClientCode = clientCode
+			rec.ReceiptNumber = receiptNumber
+			rec.TransactionDate = dateStr
+			rec.Flag = flag
+			rec.ProcessFlagMA = "COMPLETE"
+			rec.ProcessingStatus = sql.NullString{String: "completed", Valid: true}
+
+			if rec.JanCode != "" {
+				master, err := db.GetProductMasterByCodeInTx(tx, rec.JanCode)
+				if err != nil {
+					http.Error(w, "Failed to check product master", http.StatusInternalServerError)
+					return
+				}
+				if master == nil { // マスターが存在しない場合は作成
+					newMaster := model.ProductMasterInput{
+						ProductCode:      rec.JanCode,
+						YjCode:           rec.YjCode,
+						ProductName:      rec.ProductName,
+						Origin:           "JCSHMS", // ★★★ ここを "MANUAL_ENTRY" から "JCSHMS" に修正 ★★★
+						KanaName:         rec.KanaName,
+						MakerName:        rec.MakerName,
+						PackageSpec:      rec.PackageForm,
+						YjUnitName:       rec.YjUnitName,
+						YjPackUnitQty:    rec.YjPackUnitQty,
+						JanPackInnerQty:  rec.JanPackInnerQty,
+						JanPackUnitQty:   rec.JanPackUnitQty,
+						FlagPoison:       rec.FlagPoison,
+						FlagDeleterious:  rec.FlagDeleterious,
+						FlagNarcotic:     rec.FlagNarcotic,
+						FlagPsychotropic: rec.FlagPsychotropic,
+						FlagStimulant:    rec.FlagStimulant,
+						FlagStimulantRaw: rec.FlagStimulantRaw,
+					}
+					if err := db.CreateProductMasterInTx(tx, newMaster); err != nil {
+						http.Error(w, "Failed to create new product master", http.StatusInternalServerError)
+						return
+					}
+				}
+			}
+		}
+
+		if err := db.PersistTransactionRecordsInTx(tx, payload.Records); err != nil {
+			log.Printf("Failed to persist records: %v", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]string{"message": "データベースへの保存に失敗しました。"})
+			return
+		}
+
+		if err := tx.Commit(); err != nil {
+			http.Error(w, "Failed to commit transaction", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{
+			"message":       "Saved successfully",
+			"receiptNumber": receiptNumber,
+		})
+	}
+}
+
+
+----- C:\Dev\KARASHI\loader\loader.go -----
+// File: loader/loader.go
+package loader
+
+import (
+	"database/sql"
+	"encoding/csv"
+	"fmt"
+	"io"
+	"os"
+	"strconv"
+	"strings"
+
+	"golang.org/x/text/encoding/japanese"
+	"golang.org/x/text/transform"
+)
+
+// ★★★ ここにJC050の定義を追加 ★★★
+var tableSchemas = map[string]map[int]string{
+	"jcshms": {
+		44: "real", // JC044
+		50: "real", // JC050 (薬価)
+		61: "int",
+		62: "int",
+		63: "int",
+		64: "int",
+		65: "int",
+		66: "int",
+	},
+	"jancode": {
+		7: "real", // JA006
+		9: "real", // JA008
+	},
+}
+
+func InitDatabase(db *sql.DB) error {
+	if err := applySchema(db); err != nil {
+		return fmt.Errorf("schema.sql 読み込み失敗: %w", err)
+	}
+	if err := loadCSV(db, "SOU/JCSHMS.CSV", "jcshms", 125, false); err != nil {
+		return fmt.Errorf("JCSHMS 読み込み失敗: %w", err)
+	}
+	if err := loadCSV(db, "SOU/JANCODE.CSV", "jancode", 30, true); err != nil {
+		return fmt.Errorf("JANCODE 読み込み失敗: %w", err)
+	}
+	return nil
+}
+
+func applySchema(db *sql.DB) error {
+	schema, err := os.ReadFile("schema.sql")
+	if err != nil {
+		return err
+	}
+	_, err = db.Exec(string(schema))
+	return err
+}
+
+func loadCSV(db *sql.DB, filepath, tablename string, columns int, skipHeader bool) error {
+	f, err := os.Open(filepath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	r := csv.NewReader(transform.NewReader(f, japanese.ShiftJIS.NewDecoder()))
+	r.LazyQuotes = true
+	r.FieldsPerRecord = -1
+	if skipHeader {
+		if _, err := r.Read(); err != nil && err != io.EOF {
+			return err
+		}
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	placeholders := make([]string, columns)
+	for i := 0; i < columns; i++ {
+		placeholders[i] = "?"
+	}
+	stmt, err := tx.Prepare(fmt.Sprintf(
+		"INSERT OR REPLACE INTO %s VALUES (%s)",
+		tablename, strings.Join(placeholders, ","),
+	))
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	schema := tableSchemas[tablename]
+
+	for {
+		row, err := r.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil || len(row) < columns {
+			continue
+		}
+
+		args := make([]interface{}, columns)
+		for i, val := range row {
+			if i >= columns {
+				break
+			}
+			colType, isNumeric := schema[i+1]
+			if isNumeric {
+				switch colType {
+				case "real":
+					num, _ := strconv.ParseFloat(strings.TrimSpace(val), 64)
+					args[i] = num
+				case "int":
+					num, _ := strconv.ParseInt(strings.TrimSpace(val), 10, 64)
+					args[i] = num
+				default:
+					args[i] = val
+				}
+			} else {
+				args[i] = val
+			}
+		}
+
+		if _, err := stmt.Exec(args...); err != nil {
+			continue
+		}
+	}
+	return tx.Commit()
+}
+
+
+----- C:\Dev\KARASHI\mappers\mappers.go -----
+// File: mappers/mappers.go (修正版)
+package mappers
+
+import (
+	"database/sql"
+	"karashi/db"
+	"karashi/model"
+	"karashi/units"
+	"strconv"
+)
+
+// MapProductMasterToTransactionは、ProductMasterの情報をTransactionRecordにマッピングします。
+func MapProductMasterToTransaction(ar *model.TransactionRecord, master *model.ProductMaster) {
+	ar.YjCode = master.YjCode
+	ar.ProductName = master.ProductName
+	ar.KanaName = master.KanaName
+	ar.PackageForm = master.PackageSpec
+	ar.MakerName = master.MakerName
+	ar.YjPackUnitQty = master.YjPackUnitQty
+	ar.JanPackUnitQty = master.JanPackUnitQty
+	ar.FlagPoison = master.FlagPoison
+	ar.FlagDeleterious = master.FlagDeleterious
+	ar.FlagNarcotic = master.FlagNarcotic
+	ar.FlagPsychotropic = master.FlagPsychotropic
+	ar.FlagStimulant = master.FlagStimulant
+	ar.FlagStimulantRaw = master.FlagStimulantRaw
+	ar.JanPackInnerQty = master.JanPackInnerQty
+
+	yjUnitName := units.ResolveName(master.YjUnitName)
+	janUnitCode := strconv.Itoa(master.JanUnitCode)
+	var janUnitName string
+	if janUnitCode == "0" || janUnitCode == "" {
+		janUnitName = yjUnitName
+	} else {
+		janUnitName = units.ResolveName(janUnitCode)
+	}
+	ar.JanUnitName = janUnitName
+	ar.YjUnitName = yjUnitName
+	ar.JanUnitCode = janUnitCode
+
+	// ProductMasterからJCShms相当の構造体を作成して関数を呼び出す
+	tempJcshms := model.JCShms{
+		JC037: master.PackageSpec,
+		JC039: master.YjUnitName,
+		JC044: master.YjPackUnitQty,
+		JA006: sql.NullFloat64{Float64: master.JanPackInnerQty, Valid: true},
+		JA008: sql.NullFloat64{Float64: master.JanPackUnitQty, Valid: true},
+		JA007: sql.NullString{String: strconv.Itoa(master.JanUnitCode), Valid: true},
+	}
+	ar.PackageSpec = units.FormatPackageSpec(&tempJcshms)
+}
+
+// MapJcshmsToTransactionは、JCShmsの情報をTransactionRecordにマッピングします。
+func MapJcshmsToTransaction(ar *model.TransactionRecord, jcshms *model.JCShms) {
+	ar.ProductName = jcshms.JC018
+	ar.KanaName = jcshms.JC022
+	ar.PackageForm = jcshms.JC037
+	ar.MakerName = jcshms.JC030
+	ar.YjPackUnitQty = jcshms.JC044
+	ar.JanPackInnerQty = jcshms.JA006.Float64
+	ar.JanPackUnitQty = jcshms.JA008.Float64
+	ar.FlagPoison = jcshms.JC061
+	ar.FlagDeleterious = jcshms.JC062
+	ar.FlagNarcotic = jcshms.JC063
+	ar.FlagPsychotropic = jcshms.JC064
+	ar.FlagStimulant = jcshms.JC065
+	ar.FlagStimulantRaw = jcshms.JC066
+
+	yjUnitName := units.ResolveName(jcshms.JC039)
+	janUnitCode := jcshms.JA007.String
+	var janUnitName string
+	if janUnitCode == "0" || janUnitCode == "" {
+		janUnitName = yjUnitName
+	} else {
+		janUnitName = units.ResolveName(janUnitCode)
+	}
+	ar.JanUnitName = janUnitName
+	ar.YjUnitName = yjUnitName
+	ar.JanUnitCode = janUnitCode
+
+	// 新しい共通関数を呼び出して包装表記を生成
+	ar.PackageSpec = units.FormatPackageSpec(jcshms)
+}
+
+// CreateMasterFromJcshmsInTxは、既存のトランザクション内でJCSHMSからマスターを作成します。
+func CreateMasterFromJcshmsInTx(tx *sql.Tx, jan, yj string, jcshms *model.JCShms) error {
+	var nhiPrice float64
+	if jcshms.JC044 > 0 {
+		nhiPrice = jcshms.JC050 / jcshms.JC044
+	}
+	masterInput := model.ProductMasterInput{
+		ProductCode:      jan,
+		YjCode:           yj,
+		Origin:           "JCSHMS",
+		ProductName:      jcshms.JC018,
+		KanaName:         jcshms.JC022,
+		MakerName:        jcshms.JC030,
+		PackageSpec:      jcshms.JC037,
+		YjUnitName:       jcshms.JC039,
+		YjPackUnitQty:    jcshms.JC044,
+		FlagPoison:       jcshms.JC061,
+		FlagDeleterious:  jcshms.JC062,
+		FlagNarcotic:     jcshms.JC063,
+		FlagPsychotropic: jcshms.JC064,
+		FlagStimulant:    jcshms.JC065,
+		FlagStimulantRaw: jcshms.JC066,
+		JanPackInnerQty:  jcshms.JA006.Float64,
+		JanPackUnitQty:   jcshms.JA008.Float64,
+		NhiPrice:         nhiPrice,
+	}
+
+	if jcshms.JA007.Valid {
+		if val, err := strconv.Atoi(jcshms.JA007.String); err == nil {
+			masterInput.JanUnitCode = val
+		}
+	}
+
+	return db.CreateProductMasterInTx(tx, masterInput)
+}
+
+
+----- C:\Dev\KARASHI\masteredit\handler.go -----
+// File: masteredit/handler.go (Corrected)
+package masteredit
+
+import (
+	"database/sql"
+	"encoding/json"
+	"karashi/db"
+	"karashi/model"
+	"net/http"
+)
+
+// GetEditableMastersHandler returns a list of editable product masters.
+func GetEditableMastersHandler(conn *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		masters, err := db.GetEditableProductMasters(conn)
+		if err != nil {
+			http.Error(w, "Failed to get editable masters", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(masters)
+	}
+}
+
+// UpdateMasterHandler updates or inserts a product master record.
+func UpdateMasterHandler(conn *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		var input model.ProductMasterInput
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			http.Error(w, "Invalid request body", http.StatusBadRequest)
+			return
+		}
+
+		// When creating a new row, the Product Code (JAN) might be empty.
+		// In a real application, you might want to auto-assign a unique code.
+		// For now, we'll require it to be manually entered.
+		if input.ProductCode == "" {
+			http.Error(w, "Product Code (JAN) cannot be empty for a new record.", http.StatusBadRequest)
+			return
+		}
+
+		tx, err := conn.Begin()
+		if err != nil {
+			http.Error(w, "Failed to start transaction", http.StatusInternalServerError)
+			return
+		}
+		defer tx.Rollback()
+
+		// ★★★ CALL THE NEW UPSERT FUNCTION ★★★
+		if err := db.UpsertProductMasterInTx(tx, input); err != nil {
+			http.Error(w, "Failed to upsert product master", http.StatusInternalServerError)
+			return
+		}
+
+		if err := tx.Commit(); err != nil {
+			http.Error(w, "Failed to commit transaction", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"message": "保存しました。"})
+	}
+}
+
+
+----- C:\Dev\KARASHI\model\types.go -----
+// File: model/types.go (修正版)
+package model
+
+import "database/sql"
+
+// AggregationFilters は集計時のフィルター条件を保持します
+type AggregationFilters struct {
+	StartDate  string
+	EndDate    string
+	KanaName   string
+	DrugTypes  []string
+	NoMovement bool
+}
+
+// YJGroup はYJコードごとの集計結果です
+type YJGroup struct {
+	YjCode        string         `json:"yjCode"`
+	ProductName   string         `json:"productName"`
+	TotalJanQty   float64        `json:"totalJanQty"`
+	TotalYjQty    float64        `json:"totalYjQty"`
+	MaxUsageYjQty float64        `json:"maxUsageYjQty"`
+	PackageGroups []PackageGroup `json:"packageGroups"`
+}
+
+// PackageGroup は包装ごとの集計結果です
+type PackageGroup struct {
+	PackageKey     string              `json:"packageKey"`
+	TotalJanQty    float64             `json:"totalJanQty"`
+	MaxUsageJanQty float64             `json:"maxUsageJanQty"`
+	TotalYjQty     float64             `json:"totalYjQty"`
+	MaxUsageYjQty  float64             `json:"maxUsageYjQty"`
+	Transactions   []TransactionRecord `json:"transactions"`
+}
+
+// ★★★ ここまで ★★★
+
+type JCShms struct {
+	JC009 string
+	JC018 string
+	JC022 string
+	JC030 string
+	JC037 string
+	JC039 string
+	JC044 float64
+	JC050 float64
+	JC061 int
+	JC062 int
+	JC063 int
+	JC064 int
+	JC065 int
+	JC066 int
+	JA006 sql.NullFloat64
+	JA007 sql.NullString
+	JA008 sql.NullFloat64
+}
+
+type TransactionRecord struct {
+	ID               int            `json:"id"`
+	TransactionDate  string         `json:"transactionDate"`
+	ClientCode       string         `json:"clientCode"`
+	ReceiptNumber    string         `json:"receiptNumber"`
+	LineNumber       string         `json:"lineNumber"`
+	Flag             int            `json:"flag"`
+	JanCode          string         `json:"janCode"`
+	YjCode           string         `json:"yjCode"`
+	ProductName      string         `json:"productName"`
+	KanaName         string         `json:"kanaName"`
+	PackageForm      string         `json:"packageForm"`
+	PackageSpec      string         `json:"packageSpec"`
+	MakerName        string         `json:"makerName"`
+	DatQuantity      float64        `json:"datQuantity"`
+	JanPackInnerQty  float64        `json:"janPackInnerQty"`
+	JanQuantity      float64        `json:"janQuantity"`
+	JanPackUnitQty   float64        `json:"janPackUnitQty"`
+	JanUnitName      string         `json:"janUnitName"`
+	JanUnitCode      string         `json:"janUnitCode"`
+	YjQuantity       float64        `json:"yjQuantity"`
+	YjPackUnitQty    float64        `json:"yjPackUnitQty"`
+	YjUnitName       string         `json:"yjUnitName"`
+	UnitPrice        float64        `json:"unitPrice"`
+	Subtotal         float64        `json:"subtotal"`
+	TaxAmount        float64        `json:"taxAmount"`
+	TaxRate          float64        `json:"taxRate"`
+	ExpiryDate       string         `json:"expiryDate"`
+	LotNumber        string         `json:"lotNumber"`
+	FlagPoison       int            `json:"flagPoison"`
+	FlagDeleterious  int            `json:"flagDeleterious"`
+	FlagNarcotic     int            `json:"flagNarcotic"`
+	FlagPsychotropic int            `json:"flagPsychotropic"`
+	FlagStimulant    int            `json:"flagStimulant"`
+	FlagStimulantRaw int            `json:"flagStimulantRaw"`
+	ProcessFlagMA    string         `json:"processFlagMA"`
+	ProcessingStatus sql.NullString `json:"processingStatus"`
+}
+
+type ProductMaster struct {
+	ProductCode      string  `json:"productCode"`
+	YjCode           string  `json:"yjCode"`
+	ProductName      string  `json:"productName"`
+	Origin           string  `json:"origin"`
+	KanaName         string  `json:"kanaName"`
+	MakerName        string  `json:"makerName"`
+	PackageSpec      string  `json:"packageSpec"`
+	YjUnitName       string  `json:"yjUnitName"`
+	YjPackUnitQty    float64 `json:"yjPackUnitQty"`
+	FlagPoison       int     `json:"flagPoison"`
+	FlagDeleterious  int     `json:"flagDeleterious"`
+	FlagNarcotic     int     `json:"flagNarcotic"`
+	FlagPsychotropic int     `json:"flagPsychotropic"`
+	FlagStimulant    int     `json:"flagStimulant"`
+	FlagStimulantRaw int     `json:"flagStimulantRaw"`
+	JanPackInnerQty  float64 `json:"janPackInnerQty"`
+	JanUnitCode      int     `json:"janUnitCode"`
+	JanPackUnitQty   float64 `json:"janPackUnitQty"`
+	JanUnitName      string  `json:"janUnitName"`
+	ReorderPoint     float64 `json:"reorderPoint"`
+	NhiPrice         float64 `json:"nhiPrice"`
+}
+
+type ProductMasterInput struct {
+	ProductCode      string  `json:"productCode"`
+	YjCode           string  `json:"yjCode"`
+	ProductName      string  `json:"productName"`
+	Origin           string  `json:"origin"`
+	KanaName         string  `json:"kanaName"`
+	MakerName        string  `json:"makerName"`
+	PackageSpec      string  `json:"packageSpec"`
+	YjUnitName       string  `json:"yjUnitName"`
+	YjPackUnitQty    float64 `json:"yjPackUnitQty"`
+	FlagPoison       int     `json:"flagPoison"`
+	FlagDeleterious  int     `json:"flagDeleterious"`
+	FlagNarcotic     int     `json:"flagNarcotic"`
+	FlagPsychotropic int     `json:"flagPsychotropic"`
+	FlagStimulant    int     `json:"flagStimulant"`
+	FlagStimulantRaw int     `json:"flagStimulantRaw"`
+	JanPackInnerQty  float64 `json:"janPackInnerQty"`
+	JanUnitCode      int     `json:"janUnitCode"`
+	JanPackUnitQty   float64 `json:"janPackUnitQty"`
+	JanUnitName      string  `json:"janUnitName"`
+	ReorderPoint     float64 `json:"reorderPoint"`
+	NhiPrice         float64 `json:"nhiPrice"`
+}
+
+type ProductMasterView struct {
+	ProductMaster
+	FormattedPackageSpec string `json:"formattedPackageSpec"`
+}
+
+type Client struct {
+	Code string `json:"code"`
+	Name string `json:"name"`
+}
+
+
+----- C:\Dev\KARASHI\model\unified.go -----
+package model
+
+// UnifiedInputRecordは、すべての入力ソース（DAT,USAGE,INV,IOD）の
+// 全項目を網羅したスーパーセットとなる構造体です。
+// 各パーサーはこの構造体を生成し、中央処理関数に渡します。
+type UnifiedInputRecord struct {
+	// --- 伝票・日付情報 ---
+	Date          string `json:"date"`
+	ClientCode    string `json:"clientCode"`
+	ReceiptNumber string `json:"receiptNumber"`
+	LineNumber    string `json:"lineNumber"`
+	Flag          int    `json:"flag"`
+	ExpiryDate    string `json:"expiryDate"` // ← float64 から string に変更
+	LotNumber     string `json:"lotNumber"`
+
+	// --- 薬品コード・名称 ---
+	JanCode     string `json:"janCode"`
+	YjCode      string `json:"yjCode"`
+	ProductName string `json:"productName"`
+	KanaName    string `json:"kanaName"`
+	PackageSpec string `json:"packageSpec"`
+	MakerName   string `json:"makerName"`
+
+	// --- 数量 ---
+	DatQuantity     float64 `json:"datQuantity"`
+	JanPackInnerQty float64 `json:"janPackInnerQty"` // ✨ この行を追加
+	JanQuantity     float64 `json:"janQuantity"`
+	JanPackUnitQty  float64 `json:"janPackUnitQty"`
+	YjQuantity      float64 `json:"yjQuantity"`
+	YjPackUnitQty   float64 `json:"yjPackUnitQty"`
+
+	// --- 単位 ---
+	JanUnitName string `json:"janUnitName"`
+	JanUnitCode string `json:"janUnitCode"`
+	YjUnitName  string `json:"yjUnitName"`
+
+	// --- 金額 ---
+	UnitPrice float64 `json:"unitPrice"`
+	Subtotal  float64 `json:"subtotal"`
+	TaxAmount float64 `json:"taxAmount"`
+	TaxRate   float64 `json:"taxRate"`
+
+	// --- 薬事区分 ---
+	FlagPoison       int `json:"flagPoison"`
+	FlagDeleterious  int `json:"flagDeleterious"`
+	FlagNarcotic     int `json:"flagNarcotic"`
+	FlagPsychotropic int `json:"flagPsychotropic"`
+	FlagStimulant    int `json:"flagStimulant"`
+	FlagStimulantRaw int `json:"flagStimulantRaw"`
+
+	// --- 処理結果フラグ ---
+	ProcessFlagMA string `json:"processFlagMA"`
+}
+
+
+----- C:\Dev\KARASHI\static\css\styles.css -----
+/* File: static/css/styles.css */
+
+/* 必要最小限の白黒レイアウト用CSS */
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+body {
+    font-family: sans-serif;
+    background-color: #ffffff;
+    padding: 10px;
+}
+table {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 11pt;
+    border: none;
+}
+th, td {
+    border: 1px solid #000000;
+    padding: 4px 6px;
+    text-align: center;
+    vertical-align: top;
+}
+th {
+    font-weight: bold;
+}
+.left { text-align: left; }
+.right { text-align: right; }
+.center { text-align: center; }
+.hidden { display: none !important; }
+
+/* --- ページ構成 --- */
+header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid #000000;
+    margin-bottom: 10px;
+}
+.btn {
+    font-size: 14px;
+    padding: 8px 16px;
+    background-color: #ffffff;
+    border: 1px solid #000000;
+    cursor: pointer;
+}
+.btn:hover {
+    background-color: #f0f0f0;
+}
+.table-container {
+    overflow-x: auto;
+    margin-bottom: 20px;
+}
+
+/* --- 入庫出庫画面専用 --- */
+.in-out-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 20px;
+}
+.in-out-header h1 {
+    font-size: 24px;
+}
+.section {
+    margin-bottom: 20px;
+}
+.section h2 {
+    font-size: 18px;
+    margin-bottom: 10px;
+}
+.controller-table select, .controller-table input {
+    width: 100%;
+    border: 1px solid #000000;
+    padding: 4px;
+    font-size: 11pt;
+    background-color: #fff;
+}
+
+/* --- モーダル --- */
+.modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0, 0, 0, 0.6);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.modal-content {
+    background-color: #ffffff;
+    border: 1px solid #000000;
+    padding: 20px;
+    width: 80%;
+    max-height: 90vh;
+    display: flex;
+    flex-direction: column;
+}
+.modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 15px;
+}
+.modal-header h2 {
+    font-size: 20px;
+}
+.modal-body {
+    overflow-y: auto;
+}
+.close-button {
+    font-size: 24px;
+    border: none;
+    background: none;
+    cursor: pointer;
+}
+
+/* --- 集計結果の新しいスタイル (画面表示用) --- */
+.aggregation-group-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 20px; /* グループ間の余白 */
+    border: 1px solid #ccc;
+}
+
+.aggregation-group-table > thead > tr > th {
+    background-color: #f8f9fa;
+    padding: 10px;
+    text-align: left;
+    border-bottom: 2px solid #ccc;
+}
+
+.aggregation-group-table .agg-header-line1 {
+    font-weight: bold;
+    font-size: 16px;
+    color: #212529;
+    margin-bottom: 5px;
+}
+
+.aggregation-group-table .agg-header-line2 {
+    font-size: 14px;
+    color: #495057;
+    padding-left: 10px;
+}
+
+.aggregation-group-table .details-header th {
+    background-color: #e9ecef;
+    font-weight: bold;
+    text-align: center;
+}
+
+.aggregation-group-table td, 
+.aggregation-group-table th {
+    border: 1px solid #ccc;
+    padding: 4px 6px;
+    vertical-align: middle;
+}
+
+
+/* File: static/css/styles.css (@media print ブロックの全体) */
+
+/* --- 印刷専用スタイル --- */
+@media print {
+    /* 用紙設定 (A4縦、余白を縮小) */
+    @page {
+        size: A4 portrait;
+        margin: 10mm;
+    }
+
+    /* 印刷したくない要素をすべて非表示に */
+    body > header,
+    body > main > div:not(#aggregation-view),
+    #aggregation-view .in-out-header,
+    #aggregation-view .filter-container {
+        display: none !important;
+    }
+
+    /* 印刷コンテナを画面全体に広げる */
+    body, main, #aggregation-view, #aggregation-output-container {
+        display: block !important;
+        width: 100% !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        border: none !important;
+        box-shadow: none !important;
+        background: none !important;
+    }
+    
+    /* 繰り返しヘッダーの指定 */
+    .aggregation-group-table thead.repeating-header {
+        display: table-header-group;
+    }
+
+    /* グループ全体のテーブルスタイル (グループ間の余白を縮小) */
+    .aggregation-group-table {
+        page-break-inside: avoid;
+        margin-bottom: 3mm;
+        width: 100%;
+        border-collapse: collapse;
+    }
+    
+    /* 繰り返しヘッダーのスタイル (余白を縮小) */
+    .repeating-header th {
+        border: none;
+        padding: 0 0 2px 0;
+        text-align: left;
+        border-bottom: 2px solid #000;
+    }
+
+    /* ヘッダー内の文字の行間を縮小 */
+    .agg-header-line1, .agg-header-line2 {
+        line-height: 1.2;
+    }
+
+    /* 明細行のセルスタイル (余白と行間を縮小) */
+    .aggregation-group-table td,
+    .aggregation-group-table .details-header th {
+        font-size: 9pt;
+        border: 1px solid #666;
+        padding: 2px 3px;
+        line-height: 1.15;
+    }
+    
+    /* 背景色を強制的に印刷 (警告が出ていた箇所の修正版) */
+    .details-header th {
+        background-color: #e9ecef !important;
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+    }
+}
+
+----- C:\Dev\KARASHI\static\css\table_layout.css -----
+/* File: static/css/table_layout.css */
+
+/* --- テーブル専用のレイアウトスタイル --- */
+.data-table {
+    border-collapse: collapse;
+    width: 100%;
+    min-width: 1235px; /* Googleスプレッドシートのピクセル幅合計 */
+    table-layout: fixed;
+    border: 1px solid #ccc; /* 枠線の色を少し柔らかくします */
+}
+.data-table th,
+.data-table td {
+    border: 1px solid #ccc; /* 枠線の色を少し柔らかくします */
+    background-color: #ffffff;
+    text-align: left;
+    font-family: 'docs-sans-serif', Arial;
+    font-size: 11pt;
+    vertical-align: middle; /* topから変更 */
+    padding: 2px; /* パディングを少し狭くする */
+    white-space: normal;
+    word-break: break-all;
+}
+.data-table thead td {
+    background-color: #f0f0f0; /* ★背景色を薄いグレーに変更 */
+    text-align: center;
+    font-weight: bold;
+    color: #000000; /* ★文字色を黒に変更 */
+    padding: 4px 6px; /* パディングを調整 */
+    white-space: nowrap;
+}
+
+
+.data-table td input[type="text"],
+.data-table td input[type="date"],
+.data-table td select {
+    width: 100%;
+    border: 1px solid #999;
+    padding: 4px;
+    font-size: 11pt;
+    box-sizing: border-box;
+    background-color: #fff;
+}
+
+.data-table td button {
+    padding: 4px 8px;
+    background-color: #f0f0f0;
+    border: 1px solid #000;
+    cursor: pointer;
+    font-size: 10pt;
+    width: 100%; /* ボタンも幅100%に設定 */
+    box-sizing: border-box; /* パディングとボーダーを幅に含める */
+}
+
+.data-table td.center { text-align: center; }
+.data-table td.right { text-align: right; }
+
+.data-table tbody tr:nth-child(2n-1) td {
+    background-color: #ffffff;
+}
+
+.data-table tbody tr:nth-child(2n) td {
+    background-color: #f9f9f9;
+}
+
+----- C:\Dev\KARASHI\static\js\aggregation.js -----
+// File: static/js/aggregation.js (修正後の全体)
+import { createUploadTableHTML } from './common_table.js';
+
+const view = document.getElementById('aggregation-view');
+const runBtn = document.getElementById('run-aggregation-btn');
+const printBtn = document.getElementById('print-aggregation-btn'); // 印刷ボタンを取得
+const outputContainer = document.getElementById('aggregation-output-container');
+
+export function resetAggregationView() {
+    if(outputContainer) {
+        outputContainer.innerHTML = createUploadTableHTML('aggregation-table');
+    }
+}
+
+const flagMap = {1: "入", 2: "出", 3: "処"};
+
+const startDateInput = document.getElementById('startDate');
+const endDateInput = document.getElementById('endDate');
+const kanaNameInput = document.getElementById('kanaName');
+const drugTypeCheckboxes = document.querySelectorAll('input[name="drugType"]');
+const noMovementCheckbox = document.getElementById('no-movement-filter');
+
+const safeToFixed = (num, digits = 2) => (typeof num === 'number' ? num.toFixed(digits) : (0).toFixed(digits));
+
+/**
+ * 集計結果をテーブルに描画する
+ */
+function renderResults(data) {
+    if (!data || data.length === 0) {
+        outputContainer.innerHTML = "<p>対象データが見つかりませんでした。</p>";
+        return;
+    }
+
+    let html = '';
+    data.forEach(yg => {
+        yg.packageGroups.forEach(pg => {
+            // 印刷時のヘッダー繰り返しの為、グループごとにテーブルを作成
+            html += '<table class="aggregation-group-table">';
+
+            // 繰り返し表示させたいヘッダー (thead)
+            const line1Parts = [
+                `${yg.yjCode} ${yg.productName}`,
+                `YJ数量 合計: ${safeToFixed(yg.totalYjQty)}`,
+                `処方YJ数量 最大値: ${safeToFixed(yg.maxUsageYjQty)}`
+            ];
+            const line2Parts = [
+                `${pg.packageKey}`,
+                `JAN数量 合計: ${safeToFixed(pg.totalJanQty)}`,
+                `処方JAN数量 最大値: ${safeToFixed(pg.maxUsageJanQty)}`,
+                `YJ数量 合計: ${safeToFixed(pg.totalYjQty)}`,
+                `処方YJ数量 最大値: ${safeToFixed(pg.maxUsageYjQty)}`
+            ];
+            
+            html += `
+                <thead class="repeating-header">
+                    <tr>
+                        <th colspan="14">
+                            <div class="agg-header-line1">${line1Parts.join(' ')}</div>
+                            <div class="agg-header-line2">${line2Parts.join(' ')}</div>
+                        </th>
+                    </tr>
+                </thead>
+            `;
+
+            // 明細部分 (tbody)
+            html += '<tbody>';
+            if (pg.transactions && pg.transactions.length > 0) {
+                // 明細のヘッダー行
+                html += `
+                    <tr class="details-header">
+                        <th rowspan="2">日付</th><th rowspan="2">種別</th><th>YJ</th><th colspan="2">製品名</th>
+                        <th rowspan="2">個数</th><th>JAN数量</th><th>JAN包装数</th><th>JAN単位</th>
+                        <th>単価</th><th>税額</th><th>期限</th><th>ロット</th><th>MA</th>
+                    </tr>
+                    <tr class="details-header">
+                        <th>JAN</th><th>包装</th><th>メーカー</th><th>YJ数量</th>
+                        <th>YJ包装数</th><th>YJ単位</th><th>金額</th><th>税率</th>
+                        <th>得意先</th><th>伝票番号</th><th>行</th>
+                    </tr>
+                `;
+                // 明細データ
+                pg.transactions.forEach(t => {
+                    html += `
+                        <tr>
+                            <td rowspan="2">${t.transactionDate}</td><td rowspan="2">${flagMap[t.flag] || ''}</td><td>${t.yjCode}</td>
+                            <td colspan="2">${t.productName}</td><td rowspan="2">${t.datQuantity}</td>
+                            <td>${safeToFixed(t.janQuantity)}</td><td>${t.janPackUnitQty}</td><td>${t.janUnitName}</td>
+                            <td>${safeToFixed(t.unitPrice)}</td><td>${t.taxAmount}</td><td>${t.expiryDate}</td>
+                            <td>${t.lotNumber}</td><td>${t.processFlagMA}</td>
+                        </tr>
+                        <tr>
+                            <td>${t.janCode}</td><td>${t.packageSpec}</td><td>${t.makerName}</td>
+                            <td>${safeToFixed(t.yjQuantity)}</td><td>${t.yjPackUnitQty}</td><td>${t.yjUnitName}</td>
+                            <td>${t.subtotal}</td><td>${t.taxRate != null ? (t.taxRate * 100).toFixed(0) + "%" : ""}</td>
+                            <td>${t.clientCode}</td><td>${t.receiptNumber}</td><td>${t.lineNumber}</td>
+                        </tr>
+                    `;
+                });
+            } else {
+                 html += '<tr><td colspan="14" style="text-align:center; padding:10px;">このグループの明細はありません。</td></tr>';
+            }
+            html += '</tbody></table>';
+        });
+    });
+    outputContainer.innerHTML = html;
+}
+
+/**
+ * 集計ビューを初期化
+ */
+export function initAggregation() {
+    if (!view) return;
+    
+    const today = new Date();
+    const fourMonthsAgo = new Date();
+    fourMonthsAgo.setMonth(today.getMonth() - 4);
+    endDateInput.value = today.toISOString().slice(0, 10);
+    startDateInput.value = fourMonthsAgo.toISOString().slice(0, 10);
+
+    resetAggregationView();
+
+    // 印刷ボタンのクリックイベント
+    if(printBtn) {
+        printBtn.addEventListener('click', () => {
+            window.print();
+        });
+    }
+
+    runBtn.addEventListener('click', async () => {
+        outputContainer.innerHTML = "集計中...";
+        
+        const params = new URLSearchParams();
+        params.append('startDate', startDateInput.value.replace(/-/g, ''));
+        params.append('endDate', endDateInput.value.replace(/-/g, ''));
+
+        if (kanaNameInput.value) {
+            params.append('kanaName', kanaNameInput.value);
+        }
+
+        const selectedTypes = Array.from(drugTypeCheckboxes)
+            .filter(cb => cb.checked)
+            .map(cb => cb.value);
+        if (selectedTypes.length > 0) {
+            params.append('drugTypes', selectedTypes.join(','));
+        }
+
+        if (noMovementCheckbox.checked) {
+            params.append('noMovement', 'true');
+        }
+
+        try {
+             const res = await fetch(`/api/aggregation?${params.toString()}`);
+            if (!res.ok) throw new Error('集計に失敗しました');
+            const data = await res.json();
+            renderResults(data);
+        } catch (err) {
+            outputContainer.innerHTML = `<p style="color:red;">${err.message}</p>`;
+        }
+    });
+}
+
+----- C:\Dev\KARASHI\static\js\app.js -----
+// File: static/js/app.js (最終修正版)
+import { initDatUpload, resetDatUploadView } from './dat.js';
+import { initUsageUpload, resetUsageUploadView } from './usage.js';
+import { initInOut, resetInOutView } from './inout.js';
+import { initBackupButtons } from './backup.js';
+import { initMasterEdit, resetMasterEditView } from './master_edit.js';
+import { initAggregation, resetAggregationView } from './aggregation.js';
+import { initUpdateMaster } from './update_master.js';
+
+document.addEventListener('DOMContentLoaded', () => {
+  // 各モジュールの初期化
+  initDatUpload();
+  initUsageUpload();
+  initInOut();
+  initBackupButtons();
+  initMasterEdit();
+  initAggregation();
+  initUpdateMaster();
+
+  // --- ビュー切り替えロジック ---
+  const uploadView = document.getElementById('upload-view');
+  const inOutView = document.getElementById('in-out-view');
+  const masterEditView = document.getElementById('master-edit-view');
+  const aggregationView = document.getElementById('aggregation-view');
+
+  const allViews = [uploadView, inOutView, masterEditView, aggregationView];
+
+  function showView(viewToShow) {
+    allViews.forEach(v => v.classList.add('hidden'));
+    viewToShow.classList.remove('hidden');
+  }
+
+  // ▼▼▼ 修正点: 各ボタンのイベントリスナーを修正 ▼▼▼
+  document.getElementById('inOutViewBtn').addEventListener('click', () => {
+    resetInOutView();
+    showView(inOutView);
+  });
+
+  document.getElementById('masterEditViewBtn').addEventListener('click', () => {
+    resetMasterEditView();
+    showView(masterEditView);
+  });
+  
+  document.getElementById('aggregationBtn').addEventListener('click', () => {
+    resetAggregationView();
+    showView(aggregationView);
+  });
+  
+  document.getElementById('datBtn').addEventListener('click', () => {
+    resetDatUploadView();
+    showView(uploadView);
+  });
+
+  document.getElementById('usageBtn').addEventListener('click', () => {
+    resetUsageUploadView();
+    showView(uploadView);
+  });
+
+  // ▼▼▼ 修正点: 初期表示の命令を削除 ▼▼▼
+  // showView(inOutView);
+});
+
+----- C:\Dev\KARASHI\static\js\backup.js -----
+// File: static/js/backup.js (Corrected)
+
+/**
+ * Initializes the event listeners for the backup buttons.
+ */
+export function initBackupButtons() {
+    // Client buttons
+    const exportClientsBtn = document.getElementById('exportClientsBtn');
+    const importClientsBtn = document.getElementById('importClientsBtn');
+    const importClientsInput = document.getElementById('importClientsInput');
+
+    if (exportClientsBtn && importClientsBtn && importClientsInput) {
+        exportClientsBtn.addEventListener('click', () => {
+            window.location.href = '/api/clients/export';
+        });
+        importClientsBtn.addEventListener('click', () => {
+            importClientsInput.click();
+        });
+        importClientsInput.addEventListener('change', (event) => {
+            handleFileUpload(event, '/api/clients/import');
+        });
+    }
+
+    // *** ADDED: Product buttons ***
+    const exportProductsBtn = document.getElementById('exportProductsBtn');
+    const importProductsBtn = document.getElementById('importProductsBtn');
+    const importProductsInput = document.getElementById('importProductsInput');
+    
+    if (exportProductsBtn && importProductsBtn && importProductsInput) {
+        exportProductsBtn.addEventListener('click', () => {
+            window.location.href = '/api/products/export';
+        });
+        importProductsBtn.addEventListener('click', () => {
+            importProductsInput.click();
+        });
+        importProductsInput.addEventListener('change', (event) => {
+            handleFileUpload(event, '/api/products/import');
+        });
+    }
+}
+
+/**
+ * Generic file upload handler.
+ * @param {Event} event - The file input change event.
+ * @param {string} url - The API endpoint to upload the file to.
+ */
+async function handleFileUpload(event, url) {
+    const fileInput = event.target;
+    const file = fileInput.files[0];
+    if (!file) return;
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+        const res = await fetch(url, {
+            method: 'POST',
+            body: formData,
+        });
+
+        const resData = await res.json();
+        if (!res.ok) {
+            throw new Error(resData.message || 'インポートに失敗しました。');
+        }
+        alert(resData.message);
+        window.location.reload();
+
+    } catch (err) {
+        console.error(err);
+        alert(`エラー: ${err.message}`);
+    } finally {
+        fileInput.value = '';
+    }
+}
+
+----- C:\Dev\KARASHI\static\js\common_table.js -----
+// File: static/js/common_table.js (修正版)
+
+/**
+ * アップロード結果表示用テーブルの HTML を生成
+ * @param {string} tableId テーブル要素に付与する ID
+ * @returns {string} テーブル HTML
+ */
+export function createUploadTableHTML(tableId) {
+  const colWidths = [
+    "5.83%", "2.91%", "9.15%", "13.77%", "13.77%",
+    "2.91%", "5.34%", "7.69%", "5.34%", "7.21%",
+    "5.91%", "7.21%", "7.21%", "5.75%"
+  ];
+  const colgroup = `<colgroup>${
+    colWidths.map(w => `<col style="width:${w};">`).join("")
+  }</colgroup>`;
+  const header = `
+    <thead>
+      <tr>
+        <th rowspan="2">日付</th><th rowspan="2">種別</th><th>YJ</th><th colspan="2">製品名</th>
+        <th rowspan="2">個数</th><th>JAN数量</th><th>JAN包装数</th><th>JAN単位</th>
+        <th>単価</th><th>税額</th><th>期限</th><th>ロット</th><th>MA</th>
+      </tr>
+      <tr>
+        <th>JAN</th><th>包装</th><th>メーカー</th><th>YJ数量</th>
+        <th>YJ包装数</th><th>YJ単位</th><th>金額</th><th>税率</th>
+        <th>得意先</th><th>伝票番号</th><th>行</th>
+      </tr>
+    </thead>
+  `;
+  return `<table id="${tableId}" class="data-table">${colgroup}${header}<tbody>
+    <tr><td colspan="14">ファイルを選択してください。</td></tr>
+  </tbody></table>`;
+}
+
+/**
+ * アップロード結果レコードをテーブルに描画
+ * @param {string} tableId 対象テーブルの ID
+ * @param {Array<object>} records サーバーから返却されたレコード配列
+ */
+export function renderUploadTableRows(tableId, records) {
+  const tbody = document.querySelector(`#${tableId} tbody`);
+  if (!records || records.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="14">対象データがありません。</td></tr>`;
+    return;
+  }
+  const flagMap = {1: "納", 2: "返", 3: "処"};
+  let html = "";
+  records.forEach(rec => {
+    html += `
+      <tr>
+        <td rowspan="2">${rec.transactionDate || ""}</td>
+        <td rowspan="2">${flagMap[rec.flag] || ""}</td>
+        <td>${rec.yjCode || ""}</td>
+        <td class="left" colspan="2">${rec.productName || ""}</td>
+        <td class="right" rowspan="2">${rec.datQuantity?.toFixed(2) || ""}</td>
+        <td class="right">${rec.janQuantity?.toFixed(2) || ""}</td>
+        <td class="right">${rec.janPackUnitQty || ""}</td>
+        
+        <td>${rec.janUnitName || ""}</td>
+        <td class="right">${rec.unitPrice?.toFixed(2) || ""}</td>
+        <td class="right">${rec.taxAmount?.toFixed(2) || ""}</td>
+        <td>${rec.expiryDate || ""}</td>
+        <td class="left">${rec.lotNumber || ""}</td>
+        <td class="left">${rec.processFlagMA || ""}</td>
+      </tr>
+      <tr>
+        <td>${rec.janCode || ""}</td>
+        <td class="left">${rec.packageSpec || ""}</td>
+        <td class="left">${rec.makerName || ""}</td>
+        <td class="right">${rec.yjQuantity?.toFixed(2) || ""}</td>
+        <td class="right">${rec.yjPackUnitQty || ""}</td>
+        <td>${rec.yjUnitName || ""}</td>
+        <td class="right">${rec.subtotal?.toFixed(2) || ""}</td>
+        <td class="right">${rec.taxRate != null ? (rec.taxRate * 100).toFixed(0) + "%" : ""}</td>
+        <td class="left">${rec.clientCode || ""}</td>
+        <td class="left">${rec.receiptNumber || ""}</td>
+        <td class="right">${rec.lineNumber || ""}</td>
+      </tr>
+    `;
+  });
+  tbody.innerHTML = html;
+}
+
+export function setupDateDropdown(inputEl) {
+  if (!inputEl) return;
+  inputEl.value = new Date().toISOString().slice(0, 10);
+}
+
+/**
+ * APIから得意先リストを取得してプルダウンに設定
+ * @param {HTMLSelectElement} selectEl
+ */
+export async function setupClientDropdown(selectEl) {
+  if (!selectEl) return;
+  
+  // 既存の選択肢をクリア（先頭の「選択してください」などは残す）
+  const preservedOptions = Array.from(selectEl.querySelectorAll('option[value=""], option[value="--new--"]'));
+  selectEl.innerHTML = '';
+  preservedOptions.forEach(opt => selectEl.appendChild(opt));
+
+  try {
+    const res = await fetch('/api/clients');
+    if (!res.ok) throw new Error('Failed to fetch clients');
+    const clients = await res.json();
+
+    if (clients) {
+      clients.forEach(c => {
+        const opt = document.createElement('option');
+        opt.value = c.code;
+        opt.textContent = `${c.code}:${c.name}`;
+        selectEl.appendChild(opt);
+      });
+    }
+  } catch (err) {
+    console.error("得意先リストの取得に失敗:", err);
+  }
+}
+
+----- C:\Dev\KARASHI\static\js\dat.js -----
+// File: static/js/dat.js (最終修正版)
+import { createUploadTableHTML, renderUploadTableRows } from './common_table.js';
+
+const datBtn = document.getElementById('datBtn');
+const datInput = document.getElementById('datFileInput');
+const uploadContainer = document.getElementById('upload-output-container');
+
+// ▼▼▼ 修正点: リセット関数をエクスポート ▼▼▼
+export function resetDatUploadView() {
+    uploadContainer.innerHTML = createUploadTableHTML('upload-output-table');
+}
+
+export function initDatUpload() {
+    if (!datBtn || !datInput || !uploadContainer) return;
+
+    // クリック時のリセット処理とファイル選択ダイアログの表示
+    datBtn.addEventListener('click', () => {
+        datInput.click();
+    });
+
+    datInput.addEventListener('change', async e => {
+        if (!e.target.files.length) return;
+        const tbody = document.querySelector('#upload-output-table tbody');
+        tbody.innerHTML = `<tr><td colspan="14" style="text-align:center;">アップロード処理中...</td></tr>`;
+        try {
+            const formData = new FormData();
+            for (const f of e.target.files) formData.append('file', f);
+            const res = await fetch('/api/dat/upload', { method: 'POST', body: formData });
+            if (!res.ok) throw new Error(res.status);
+            const data = await res.json();
+            renderUploadTableRows('upload-output-table', data.records);
+        } catch (err) {
+            tbody.innerHTML = `<tr><td colspan="14" style="color:red; text-align:center;">処理失敗: ${err.message}</td></tr>`;
+        }
+    });
+}
+
+----- C:\Dev\KARASHI\static\js\inout_details_table.js -----
+// File: static/js/inout_details_table.js (Final Version)
+import { initModal, showModal } from './inout_modal.js';
+
+const detailsTableBody = document.querySelector('#details-table tbody');
+const addRowBtn = document.getElementById('addRowBtn');
+let targetRow = null;
+
+/**
+ * Calculates totals for a given row.
+ * @param {HTMLTableRowElement} firstRow - The first row of the entry.
+ */
+function calculateRowTotals(firstRow) {
+    if (!firstRow) return;
+    const secondRow = firstRow.nextElementSibling;
+
+    const quantity = parseFloat(firstRow.cells[5].querySelector('input').value) || 0;
+    const unitPrice = parseFloat(firstRow.cells[8].querySelector('input').value) || 0;
+    const taxRate = parseFloat(document.getElementById('in-out-taxrate').value) || 0;
+    
+    const janPackInnerQty = parseFloat(firstRow.dataset.janPackInnerQty) || 0;
+    const yjQuantity = quantity * janPackInnerQty;
+    secondRow.cells[3].textContent = yjQuantity.toFixed(2);
+
+    const subtotal = quantity * unitPrice;
+    const taxAmount = Math.floor(subtotal * (taxRate / 100));
+
+    secondRow.cells[6].textContent = subtotal.toFixed(0); // Amount cell
+    firstRow.cells[9].textContent = taxAmount.toFixed(0);  // Tax cell
+}
+
+/**
+ * Handles product selection from the modal.
+ * @param {object} product - The selected product data.
+ */
+function handleProductSelection(product) {
+    if (!targetRow) return;
+    const firstRow = targetRow;
+    const secondRow = targetRow.nextElementSibling;
+
+    // --- Store all necessary master data in the row's dataset ---
+    firstRow.dataset.janPackInnerQty = product.janPackInnerQty || '0';
+    firstRow.dataset.kanaName = product.kanaName || '';
+    firstRow.dataset.packageForm = product.packageSpec || '';
+    firstRow.dataset.flagPoison = product.flagPoison || '0';
+    firstRow.dataset.flagDeleterious = product.flagDeleterious || '0';
+    firstRow.dataset.flagNarcotic = product.flagNarcotic || '0';
+    firstRow.dataset.flagPsychotropic = product.flagPsychotropic || '0';
+    firstRow.dataset.flagStimulant = product.flagStimulant || '0';
+    firstRow.dataset.flagStimulantRaw = product.flagStimulantRaw || '0';
+
+    // --- Populate visible cells ---
+    firstRow.cells[2].textContent = product.yjCode || '';
+    firstRow.cells[3].textContent = product.productName || '';
+    firstRow.cells[6].textContent = product.janPackUnitQty || '';
+    firstRow.cells[7].textContent = product.janUnitName || '';
+    firstRow.cells[8].querySelector('input').value = product.nhiPrice ? product.nhiPrice.toFixed(2) : '0.00';
+
+    secondRow.cells[0].textContent = product.productCode || '';
+    secondRow.cells[1].textContent = product.formattedPackageSpec || '';
+    secondRow.cells[2].textContent = product.makerName || '';
+    secondRow.cells[4].textContent = product.yjPackUnitQty || '';
+    secondRow.cells[5].textContent = product.yjUnitName || '';
+    
+    calculateRowTotals(firstRow);
+    targetRow = null;
+}
+
+/**
+ * Adds a new empty row to the table.
+ */
+function addRow() {
+  const newRowsHTML = `
+    <tr>
+      <td rowspan="2"></td>
+      <td rowspan="2"></td>
+      <td></td>
+      <td colspan="2" class="product-name-cell"></td>
+      <td rowspan="2"></td>
+      <td><input type="text" class="recalc-trigger jan-quantity-input"></td>
+      <td></td>
+      <td></td>
+      <td><input type="text" class="recalc-trigger unit-price-input"></td>
+      <td></td>
+      <td><input type="date"></td>
+      <td><input type="text"></td>
+      <td><button class="delete-row-btn">削除</button></td>
+    </tr>
+    <tr>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+      <td></td>
+    </tr>
+  `;
+  detailsTableBody.insertAdjacentHTML('beforeend', newRowsHTML);
+}
+
+/**
+ * Initializes the details table functionality.
+ */
+export function initDetailsTable() {
+    if (!detailsTableBody || !addRowBtn) return;
+    initModal(handleProductSelection);
+    addRowBtn.addEventListener('click', addRow);
+    
+    detailsTableBody.addEventListener('click', (event) => {
+        if (event.target.classList.contains('delete-row-btn')) {
+            const firstRow = event.target.closest('tr');
+            const secondRow = firstRow.nextElementSibling;
+            firstRow.remove();
+            if (secondRow) secondRow.remove();
+            return;
+        }
+        const productNameCell = event.target.closest('.product-name-cell');
+        if (productNameCell) {
+            targetRow = productNameCell.closest('tr');
+            showModal();
+        }
+    });
+
+    detailsTableBody.addEventListener('input', (event) => {
+        if (event.target.classList.contains('recalc-trigger')) {
+            const firstRow = event.target.closest('tr');
+            calculateRowTotals(firstRow);
+        }
+    });
+
+    document.getElementById('in-out-taxrate').addEventListener('input', () => {
+        const rows = detailsTableBody.querySelectorAll('tr:nth-child(odd)');
+        rows.forEach(calculateRowTotals);
+    });
+}
+
+/**
+ * Gathers and returns data from the details table.
+ * @returns {Array<object>}
+ */
+export function getDetailsData() {
+    const records = [];
+    const rows = detailsTableBody.querySelectorAll('tr:nth-child(odd)');
+    rows.forEach((firstRow, index) => {
+        const secondRow = firstRow.nextElementSibling;
+        const productName = firstRow.cells[3].textContent.trim();
+        if (!productName) return;
+
+        const ds = firstRow.dataset; // Dataset for easy access
+
+        const record = {
+            lineNumber: (index + 1).toString(),
+            yjCode: firstRow.cells[2].textContent,
+            productName: productName,
+            janQuantity: parseFloat(firstRow.cells[5].querySelector('input').value) || 0,
+            janPackUnitQty: parseFloat(firstRow.cells[6].textContent) || 0,
+            janUnitName: firstRow.cells[7].textContent,
+            unitPrice: parseFloat(firstRow.cells[8].querySelector('input').value) || 0,
+            expiryDate: firstRow.cells[10].querySelector('input').value.replace(/-/g, ''),
+            lotNumber: firstRow.cells[11].querySelector('input').value,
+            janCode: secondRow.cells[0].textContent,
+            packageSpec: secondRow.cells[1].textContent,
+            makerName: secondRow.cells[2].textContent,
+            yjQuantity: parseFloat(secondRow.cells[3].textContent) || 0,
+            yjPackUnitQty: parseFloat(secondRow.cells[4].textContent) || 0,
+            yjUnitName: secondRow.cells[5].textContent,
+            subtotal: parseFloat(secondRow.cells[6].textContent) || 0,
+            taxAmount: parseFloat(firstRow.cells[9].textContent) || 0,
+            // --- Add the new fields from the dataset ---
+            datQuantity: 0, // Set to 0 as requested
+            kanaName: ds.kanaName,
+            packageForm: ds.packageForm,
+            flagPoison: parseInt(ds.flagPoison, 10) || 0,
+            flagDeleterious: parseInt(ds.flagDeleterious, 10) || 0,
+            flagNarcotic: parseInt(ds.flagNarcotic, 10) || 0,
+            flagPsychotropic: parseInt(ds.flagPsychotropic, 10) || 0,
+            flagStimulant: parseInt(ds.flagStimulant, 10) || 0,
+            flagStimulantRaw: parseInt(ds.flagStimulantRaw, 10) || 0,
+        };
+        records.push(record);
+    });
+    return records;
+}
+
+/**
+ * Clears the details table.
+ */
+export function clearDetailsTable() {
+    detailsTableBody.innerHTML = '';
+}
+
+/**
+ * Populates the details table with loaded data.
+ * @param {Array<object>} records - The transaction records to display.
+ */
+export function populateDetailsTable(records) {
+    clearDetailsTable();
+    let newHTML = '';
+
+    records.forEach(rec => {
+        const expiryDateFormatted = rec.expiryDate ? `${rec.expiryDate.slice(0, 4)}-${rec.expiryDate.slice(4, 6)}-${rec.expiryDate.slice(6, 8)}` : '';
+        const flagMap = {1: "入庫", 2: "出庫"};
+
+        // Recreate the two-row structure for each record, including the data-* attributes
+        newHTML += `
+            <tr 
+              data-jan-pack-inner-qty="${rec.janPackInnerQty || 0}"
+              data-kana-name="${rec.kanaName || ''}"
+              data-package-form="${rec.packageForm || ''}"
+              data-flag-poison="${rec.flagPoison || 0}"
+              data-flag-deleterious="${rec.flagDeleterious || 0}"
+              data-flag-narcotic="${rec.flagNarcotic || 0}"
+              data-flag-psychotropic="${rec.flagPsychotropic || 0}"
+              data-flag-stimulant="${rec.flagStimulant || 0}"
+              data-flag-stimulant-raw="${rec.flagStimulantRaw || 0}"
+            >
+                <td rowspan="2">${rec.transactionDate || ''}</td>
+                <td rowspan="2">${flagMap[rec.flag] || ''}</td>
+                <td>${rec.yjCode || ''}</td>
+                <td colspan="2" class="product-name-cell">${rec.productName || ''}</td>
+                <td rowspan="2">${rec.datQuantity?.toFixed(2) || ''}</td>
+                <td><input type="text" class="recalc-trigger jan-quantity-input" value="${rec.janQuantity || 0}"></td>
+                <td>${rec.janPackUnitQty || ''}</td>
+                <td>${rec.janUnitName || ''}</td>
+                <td><input type="text" class="recalc-trigger unit-price-input" value="${rec.unitPrice?.toFixed(2) || 0}"></td>
+                <td>${rec.taxAmount || 0}</td>
+                <td><input type="date" value="${expiryDateFormatted}"></td>
+                <td><input type="text" value="${rec.lotNumber || ''}"></td>
+                <td><button class="delete-row-btn">削除</button></td>
+            </tr>
+            <tr>
+                <td>${rec.janCode || ''}</td>
+                <td>${rec.packageSpec || ''}</td>
+                <td>${rec.makerName || ''}</td>
+                <td>${rec.yjQuantity?.toFixed(2) || 0}</td>
+                <td>${rec.yjPackUnitQty || ''}</td>
+                <td>${rec.yjUnitName || ''}</td>
+                <td>${rec.subtotal || 0}</td>
+                <td>${rec.taxRate != null ? (rec.taxRate * 100).toFixed(0) + "%" : ""}</td>
+                <td>${rec.clientCode || ''}</td>
+                <td>${rec.receiptNumber || ''}</td>
+                <td>${rec.lineNumber || ''}</td>
+            </tr>
+        `;
+    });
+
+    detailsTableBody.innerHTML = newHTML;
+}
+
+----- C:\Dev\KARASHI\static\js\inout_header.js -----
+// File: static/js/inout_header.js (Corrected)
+import { setupDateDropdown, setupClientDropdown } from './common_table.js';
+
+const NEW_ENTRY_VALUE = '--new--';
+
+let clientSelect, receiptSelect, saveBtn, deleteBtn, headerDateInput, headerTypeSelect;
+
+let newClientName = null;
+let currentLoadedReceipt = null; // Variable to track the loaded slip
+
+
+async function initializeClientDropdown() {
+    clientSelect.innerHTML = `<option value="">選択してください</option>`;
+    await setupClientDropdown(clientSelect);
+    
+    const newOption = document.createElement('option');
+    newOption.value = NEW_ENTRY_VALUE;
+    newOption.textContent = '--- 新規作成 ---';
+    clientSelect.appendChild(newOption);
+}
+
+// ▼▼▼ 修正点: リセット関数をエクスポート ▼▼▼
+export function resetHeader() {
+    if (!clientSelect || !headerDateInput) return;
+    setupDateDropdown(headerDateInput);
+    initializeClientDropdown();
+    receiptSelect.innerHTML = `
+        <option value="">日付を選択してください</option>
+        <option value="${NEW_ENTRY_VALUE}">--- 新規作成 ---</option>
+    `;
+    headerTypeSelect.value = "入庫";
+    newClientName = null;
+    currentLoadedReceipt = null;
+    deleteBtn.disabled = true;
+    headerDateInput.dispatchEvent(new Event('change'));
+}
+
+export async function initHeader(getDetailsData, clearDetailsTable, populateDetailsTable) {
+    clientSelect = document.getElementById('in-out-client');
+    receiptSelect = document.getElementById('in-out-receipt');
+    saveBtn = document.getElementById('saveBtn');
+    deleteBtn = document.getElementById('deleteBtn');
+    headerDateInput = document.getElementById('in-out-date');
+    headerTypeSelect = document.getElementById('in-out-type');
+
+    if (!clientSelect || !receiptSelect || !saveBtn || !deleteBtn) return;
+    deleteBtn.disabled = true;
+
+    setupDateDropdown(headerDateInput);
+    await initializeClientDropdown();
+    receiptSelect.innerHTML = `
+        <option value="">日付を選択してください</option>
+        <option value="${NEW_ENTRY_VALUE}">--- 新規作成 ---</option>
+    `;
+    
+    headerDateInput.addEventListener('change', async () => {
+        const date = headerDateInput.value.replace(/-/g, '');
+        if (!date) return;
+
+        try {
+            const res = await fetch(`/api/receipts?date=${date}`);
+            if (!res.ok) throw new Error('伝票の取得に失敗');
+            const receiptNumbers = await res.json();
+            
+            receiptSelect.innerHTML = `
+                <option value="">選択してください</option>
+                <option value="${NEW_ENTRY_VALUE}">--- 新規作成 ---</option>
+            `;
+
+            if (receiptNumbers && receiptNumbers.length > 0) {
+                receiptNumbers.forEach(num => {
+                    const opt = document.createElement('option');
+                    opt.value = num;
+                    opt.textContent = num;
+                    receiptSelect.appendChild(opt);
+                });
+            }
+        } catch (err) {
+            console.error(err);
+            receiptSelect.innerHTML = `
+                <option value="">選択してください</option>
+                <option value="${NEW_ENTRY_VALUE}">--- 新規作成 ---</option>
+            `;
+        }
+    });
+
+    clientSelect.addEventListener('change', () => {
+        const selectedValue = clientSelect.value;
+        if (selectedValue === NEW_ENTRY_VALUE) {
+            const name = prompt('新しい得意先名を入力してください:');
+            if (name && name.trim()) {
+                newClientName = name.trim();
+                const opt = document.createElement('option');
+                opt.value = `new:${newClientName}`;
+                opt.textContent = `[新規] ${newClientName}`;
+                opt.selected = true;
+                clientSelect.appendChild(opt);
+            } else {
+                clientSelect.value = '';
+            }
+        } else if (!selectedValue.startsWith('new:')) {
+            newClientName = null;
+        }
+    });
+
+    receiptSelect.addEventListener('change', async () => {
+        const selectedValue = receiptSelect.value;
+        deleteBtn.disabled = (selectedValue === NEW_ENTRY_VALUE || selectedValue === "");
+
+        if (selectedValue === NEW_ENTRY_VALUE || selectedValue === "") {
+            clearDetailsTable();
+            currentLoadedReceipt = null; // Clear loaded receipt state
+        } else {
+            try {
+                const res = await fetch(`/api/transaction/${selectedValue}`);
+                if (!res.ok) throw new Error('明細の読込に失敗');
+                const records = await res.json();
+
+                if (records && records.length > 0) {
+                    currentLoadedReceipt = selectedValue; // Set the loaded receipt number
+                    const clientCode = records[0].clientCode;
+                    clientSelect.value = clientCode;
+                    newClientName = null;
+                }
+                
+                populateDetailsTable(records);
+            } catch (err) {
+                console.error(err);
+                alert(err.message);
+            }
+        }
+    });
+    
+    saveBtn.addEventListener('click', async () => {
+        let clientCode = clientSelect.value;
+        let clientNameToSave = '';
+        let isNewClient = false;
+
+        if (newClientName && clientCode.startsWith('new:')) {
+            clientNameToSave = newClientName;
+            isNewClient = true;
+            clientCode = '';
+        } else {
+            if (!clientCode || clientCode === NEW_ENTRY_VALUE) {
+                alert('得意先を選択または新規作成してください。');
+                return;
+            }
+        }
+        
+        const records = getDetailsData();
+        if (records.length === 0) {
+            alert('保存する明細データがありません。');
+            return;
+        }
+        
+        const payload = {
+            isNewClient: isNewClient,
+            clientCode: clientCode,
+            clientName: clientNameToSave,
+            transactionDate: headerDateInput.value.replace(/-/g, ''),
+            transactionType: headerTypeSelect.value,
+            records: records,
+            originalReceiptNumber: currentLoadedReceipt // Send the original receipt number
+        };
+
+        try {
+            const res = await fetch('/api/inout/save', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+            });
+
+            const resData = await res.json();
+            if (!res.ok) {
+                throw new Error(resData.message || `保存に失敗しました (HTTP ${res.status})`);
+            }
+
+            alert(`データを保存しました。\n伝票番号: ${resData.receiptNumber}`);
+            
+            // Reset UI
+            clearDetailsTable();
+            await initializeClientDropdown();
+            newClientName = null;
+            currentLoadedReceipt = null;
+            headerDateInput.dispatchEvent(new Event('change'));
+            receiptSelect.value = NEW_ENTRY_VALUE;
+            deleteBtn.disabled = true;
+
+        } catch (err) {
+            console.error(err);
+            alert(err.message);
+        }
+    });
+
+    deleteBtn.addEventListener('click', async () => {
+        const receiptNumber = receiptSelect.value;
+        if (!receiptNumber || receiptNumber === NEW_ENTRY_VALUE) {
+            alert("削除対象の伝票が選択されていません。");
+            return;
+        }
+
+        if (!confirm(`伝票番号 [${receiptNumber}] を完全に削除します。よろしいですか？`)) {
+            return;
+        }
+
+        try {
+            const res = await fetch(`/api/transaction/delete/${receiptNumber}`, {
+                method: 'DELETE',
+            });
+            
+            const errData = await res.json().catch(() => null);
+            if (!res.ok) {
+                throw new Error(errData?.message || '削除に失敗しました。');
+            }
+
+            alert(`伝票 [${receiptNumber}] を削除しました。`);
+            
+            clearDetailsTable();
+            await initializeClientDropdown();
+            receiptSelect.innerHTML = `
+                <option value="">日付を選択してください</option>
+                <option value="${NEW_ENTRY_VALUE}" selected>--- 新規作成 ---</option>
+            `;
+            newClientName = null;
+            deleteBtn.disabled = true;
+            headerDateInput.dispatchEvent(new Event('change'));
+
+        } catch(err) {
+            console.error(err);
+            alert(err.message);
+        }
+    });
+
+    headerDateInput.dispatchEvent(new Event('change'));
+}
+
+----- C:\Dev\KARASHI\static\js\inout_modal.js -----
+// File: static/js/inout_modal.js
+
+// --- プライベート変数 ---
+let onProductSelectCallback = null;
+
+// --- DOM要素の取得 ---
+const modal = document.getElementById('search-modal'); 
+const closeModalBtn = document.getElementById('closeModalBtn'); 
+const searchInput = document.getElementById('product-search-input');
+const searchBtn = document.getElementById('product-search-btn');
+const searchResultsBody = document.querySelector('#search-results-table tbody'); 
+
+/**
+ * 検索結果テーブルでのクリックを処理（イベント委譲）
+ * @param {Event} event
+ */
+function handleResultClick(event) {
+  if (event.target && event.target.classList.contains('select-product-btn')) {
+    const product = JSON.parse(event.target.dataset.product); 
+    if (typeof onProductSelectCallback === 'function') { 
+      onProductSelectCallback(product); 
+    }
+    modal.classList.add('hidden'); 
+  }
+}
+
+/**
+ * APIを叩いて製品を検索する
+ */
+async function performSearch() {
+  const query = searchInput.value.trim(); 
+  if (query.length < 2) { 
+    alert('2文字以上入力してください。');
+    return;
+  }
+  searchResultsBody.innerHTML = '<tr><td colspan="6" class="center">検索中...</td></tr>'; 
+  try {
+    const res = await fetch(`/api/products/search?q=${encodeURIComponent(query)}`); 
+    if (!res.ok) throw new Error(`サーバーエラー: ${res.status}`); 
+    const products = await res.json(); 
+    renderSearchResults(products);
+  } catch (err) {
+    searchResultsBody.innerHTML = `<tr><td colspan="6" class="center" style="color:red;">${err.message}</td></tr>`; 
+  }
+}
+
+/**
+ * 検索結果をテーブルに描画する
+ * @param {Array<object>} products
+ */
+function renderSearchResults(products) {
+  if (!products || products.length === 0) { 
+    searchResultsBody.innerHTML = '<tr><td colspan="6" class="center">該当する製品が見つかりません。</td></tr>'; 
+    return; 
+  }
+  let html = '';
+  products.forEach(p => {
+    const productData = JSON.stringify(p);
+    // ★★★ Goから送られてきた整形済み包装表記をそのまま使う ★★★
+    html += `
+      <tr>
+        <td class="left">${p.productName || ''}</td>
+        <td class="left">${p.makerName || ''}</td>
+        <td class="left">${p.formattedPackageSpec}</td>
+        <td>${p.yjCode || ''}</td>
+        <td>${p.productCode || ''}</td>
+        <td><button class="select-product-btn" data-product='${productData}'>選択</button></td>
+      </tr>
+    `; 
+  });
+  searchResultsBody.innerHTML = html;
+}
+
+/**
+ * モーダルを初期化し、イベントリスナーを設定する
+ * @param {function} onSelect - 製品選択時に実行されるコールバック関数
+ */
+export function initModal(onSelect) {
+  if (!modal || !closeModalBtn || !searchInput || !searchBtn || !searchResultsBody) {
+    console.error("薬品検索モーダルの必須要素が見つかりません。"); 
+    return; 
+  }
+  onProductSelectCallback = onSelect;
+
+  closeModalBtn.addEventListener('click', () => modal.classList.add('hidden'));
+  searchBtn.addEventListener('click', performSearch); 
+  searchInput.addEventListener('keypress', (e) => { 
+    if (e.key === 'Enter') performSearch();
+  });
+  searchResultsBody.addEventListener('click', handleResultClick); 
+}
+
+/**
+ * モーダルを表示する
+ */
+export function showModal() {
+  if (modal) {
+    modal.classList.remove('hidden');
+    searchInput.focus();
+    searchResultsBody.innerHTML = '<tr><td colspan="6">製品名を入力して検索してください。</td></tr>'; 
+  }
+}
+
+----- C:\Dev\KARASHI\static\js\inout.js -----
+// File: static/js/inout.js (最終修正版)
+import { initHeader, resetHeader } from './inout_header.js';
+import { initDetailsTable, clearDetailsTable } from './inout_details_table.js';
+
+/**
+ * Initializes all In/Out screen functionality.
+ */
+export async function initInOut() {
+  initDetailsTable();
+  await initHeader();
+}
+
+// ▼▼▼ 修正点: リセット関数をエクスポート ▼▼▼
+export function resetInOutView() {
+    clearDetailsTable();
+    resetHeader();
+}
+
+----- C:\Dev\KARASHI\static\js\master_edit.js -----
+// File: static/js/master_edit.js (Corrected)
+
+// --- Global variables and DOM elements ---
+const view = document.getElementById('master-edit-view');
+const refreshBtn = document.getElementById('refreshMastersBtn');
+const addMasterRowBtn = document.getElementById('addMasterRowBtn');
+const tableHead = document.querySelector('#master-edit-table thead');
+const tableBody = document.querySelector('#master-edit-table tbody');
+
+// TANI.CSV data replacement
+const taniMap = {
+    "11": "包", "13": "本", "30": "錠", "33": "ｇ", "34": "ｍＬ", "43": "個",
+};
+
+// Header definitions
+const upperHeaders = [
+    { key: 'productCode', name: 'JC000(JANコード)', type: 'text' },
+    { key: 'productName', name: 'JC018(製品名)', type: 'text' },
+    { key: 'makerName', name: 'JC030(メーカー名)', type: 'text' },
+    { key: 'janPackUnitQty', name: 'JA008(JAN包装数量)', type: 'number' },
+    { key: 'janUnitCode', name: 'JA007(JAN単位)', type: 'text' },
+    { key: 'janPackInnerQty', name: 'JA006(内包装数量)', type: 'number' },
+    { key: 'flagPoison', name: 'JC061(毒薬)', type: 'select', options: [0, 1] },
+    { key: 'flagDeleterious', name: 'JC062(劇薬)', type: 'select', options: [0, 1] },
+    { key: 'flagNarcotic', name: 'JC063(麻薬)', type: 'select', options: [0, 1] },
+];
+const lowerHeaders = [
+    { key: 'yjCode', name: 'JC009(YJコード)', type: 'text' },
+    { key: 'kanaName', name: 'JC022(カナ名)', type: 'text' },
+    { key: 'packageSpec', name: 'JC037(包装)', type: 'text' },
+    { key: 'yjPackUnitQty', name: 'JC044(YJ包装数量)', type: 'number' },
+    { key: 'yjUnitName', name: 'JC039(YJ単位)', type: 'text' },
+    { key: 'nhiPrice', name: 'JC050(薬価)', type: 'number' },
+    { key: 'flagPsychotropic', name: 'JC064(向精神薬)', type: 'select', options: [0, 1, 2, 3] },
+    { key: 'flagStimulant', name: 'JC065(覚醒剤)', type: 'select', options: [0, 1] },
+    { key: 'flagStimulantRaw', name: 'JC066(覚醒剤原料)', type: 'select', options: [0, 1] },
+];
+
+/**
+ * Resolves a unit code to its Japanese name.
+ */
+function resolveTaniName(code) {
+    return taniMap[code] || code;
+}
+
+/**
+ * Assembles and displays the packaging string for a given row.
+ * @param {HTMLTableRowElement} upperRow - The upper row of the record.
+ */
+function formatPackageSpecForRow(upperRow) {
+    const lowerRow = upperRow.nextElementSibling;
+    if (!lowerRow) return;
+
+    const jc037 = lowerRow.querySelector('input[name="packageSpec"]').value;
+    const jc044 = lowerRow.querySelector('input[name="yjPackUnitQty"]').value;
+    const jc039_code = lowerRow.querySelector('input[name="yjUnitName"]').value;
+    const ja006 = upperRow.querySelector('input[name="janPackInnerQty"]').value;
+    const ja008 = upperRow.querySelector('input[name="janPackUnitQty"]').value;
+    const ja007_code = upperRow.querySelector('input[name="janUnitCode"]').value;
+
+    const yjUnitName = resolveTaniName(jc039_code);
+    let pkg = `${jc037} ${jc044}${yjUnitName}`;
+    
+    if (ja006 && ja008) {
+        let janUnitName = '';
+        if (ja007_code && ja007_code !== '0') {
+            janUnitName = resolveTaniName(ja007_code);
+        }
+        pkg += ` (${ja006}${yjUnitName}×${ja008}${janUnitName})`;
+    }
+    
+    upperRow.querySelector('.package-spec-result').textContent = pkg;
+}
+
+/**
+ * Creates the HTML for a two-row master record.
+ * @param {object} master - The master data record.
+ * @returns {string} - The HTML string for the two table rows.
+ */
+function createMasterRowHTML(master = {}) {
+    let upperHtml = '<tr>';
+    upperHeaders.forEach(h => {
+        const value = master[h.key] ?? ''; // Use ?? to handle null/undefined
+        if (h.type === 'select') {
+            let options = h.options.map(o => `<option value="${o}" ${o == value ? 'selected' : ''}>${o}</option>`).join('');
+            upperHtml += `<td><select name="${h.key}">${options}</select></td>`;
+        } else {
+            upperHtml += `<td><input type="${h.type}" name="${h.key}" value="${value}" step="any"></td>`;
+        }
+    });
+    upperHtml += `<td rowspan="2" class="package-spec-result"></td>`;
+    upperHtml += `<td rowspan="2"><button class="save-master-row-btn">保存</button></td>`;
+    upperHtml += '</tr>';
+
+    let lowerHtml = '<tr>';
+    lowerHeaders.forEach(h => {
+        const value = master[h.key] ?? '';
+        if (h.type === 'select') {
+             let options = h.options.map(o => `<option value="${o}" ${o == value ? 'selected' : ''}>${o}</option>`).join('');
+            lowerHtml += `<td><select name="${h.key}">${options}</select></td>`;
+        } else {
+            lowerHtml += `<td><input type="${h.type}" name="${h.key}" value="${value}" step="any"></td>`;
+        }
+    });
+    lowerHtml += '</tr>';
+
+    return upperHtml + lowerHtml;
+}
+
+
+// ▼▼▼ 修正点: リセット関数をエクスポート ▼▼▼
+export function resetMasterEditView() {
+    if (tableBody) {
+        tableBody.innerHTML = '';
+    }
+}
+
+/**
+ * Fetches and renders master data into the table.
+ */
+async function loadAndRenderMasters() {
+    tableBody.innerHTML = `<tr><td colspan="${upperHeaders.length + 2}">読み込み中...</td></tr>`;
+    try {
+        const res = await fetch('/api/masters/editable');
+        if (!res.ok) throw new Error('マスターデータの取得に失敗しました。');
+        const masters = await res.json() || [];
+
+        if (masters.length === 0) {
+            tableBody.innerHTML = `<tr><td colspan="${upperHeaders.length + 2}">対象のマスターデータはありません。</td></tr>`;
+            return;
+        }
+
+        tableBody.innerHTML = masters.map(createMasterRowHTML).join('');
+        tableBody.querySelectorAll('tr:nth-child(odd)').forEach(formatPackageSpecForRow);
+
+    } catch (err) {
+        console.error(err);
+        tableBody.innerHTML = `<tr><td colspan="${upperHeaders.length + 2}" style="color:red;">${err.message}</td></tr>`;
+    }
+}
+
+/**
+ * Initializes the master edit view.
+ */
+export function initMasterEdit() {
+    if (!view) return;
+
+    let headerHtml = '<tr>';
+    upperHeaders.forEach(h => headerHtml += `<th>${h.name}</th>`);
+    headerHtml += `<th rowspan="2">組み立てた包装</th><th rowspan="2">保存</th></tr>`;
+    headerHtml += '<tr>';
+    lowerHeaders.forEach(h => headerHtml += `<th>${h.name}</th>`);
+    headerHtml += '</tr>';
+    tableHead.innerHTML = headerHtml;
+
+    refreshBtn.addEventListener('click', loadAndRenderMasters);
+    
+    addMasterRowBtn.addEventListener('click', () => {
+        tableBody.insertAdjacentHTML('beforeend', createMasterRowHTML());
+    });
+
+    tableBody.addEventListener('input', (event) => {
+        if (event.target.tagName === 'INPUT' || event.target.tagName === 'SELECT') {
+            const upperRow = event.target.closest('tr:nth-child(odd), tr:nth-child(even)').previousElementSibling || event.target.closest('tr');
+            formatPackageSpecForRow(upperRow);
+        }
+    });
+
+    tableBody.addEventListener('click', async (event) => {
+        if (event.target.classList.contains('save-master-row-btn')) {
+            const upperRow = event.target.closest('tr');
+            const lowerRow = upperRow.nextElementSibling;
+            
+            const data = { origin: 'MANUAL_ENTRY' };
+            upperHeaders.forEach(h => data[h.key] = upperRow.querySelector(`[name="${h.key}"]`).value);
+            lowerHeaders.forEach(h => data[h.key] = lowerRow.querySelector(`[name="${h.key}"]`).value);
+            
+            if (!data.productCode || data.productCode.trim() === '') {
+                alert('製品コード(JAN)は必須です。新しいレコードを保存する前に入力してください。');
+                return;
+            }
+
+            // *** CORRECTED: Explicitly convert all numeric fields ***
+            const floatFields = ['yjPackUnitQty', 'nhiPrice', 'reorderPoint', 'janPackInnerQty', 'janPackUnitQty'];
+            const intFields = ['janUnitCode', 'flagPoison', 'flagDeleterious', 'flagNarcotic', 'flagPsychotropic', 'flagStimulant', 'flagStimulantRaw'];
+
+            floatFields.forEach(key => {
+                data[key] = parseFloat(data[key]) || 0;
+            });
+            intFields.forEach(key => {
+                data[key] = parseInt(data[key], 10) || 0;
+            });
+            // *** END CORRECTION ***
+
+            try {
+                const res = await fetch('/api/master/update', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(data),
+                });
+                const resData = await res.json();
+                if (!res.ok) throw new Error(resData.message || '保存に失敗しました。');
+                
+                alert(resData.message);
+                loadAndRenderMasters();
+
+            } catch (err) {
+                console.error(err);
+                alert(`エラー: ${err.message}`);
+            }
+        }
+    });
+
+    // ▼▼▼ 修正点: 起動時の読み込みをリセット関数で行う ▼▼▼
+    resetMasterEditView();
+    loadAndRenderMasters(); 
+
+}
+
+----- C:\Dev\KARASHI\static\js\update_master.js -----
+// File: static/js/update_master.js (新規作成)
+
+/**
+ * JCSHMSマスター更新ボタンの機能を初期化する
+ */
+export function initUpdateMaster() {
+    const updateBtn = document.getElementById('updateJcshmsBtn');
+    if (!updateBtn) return;
+
+    updateBtn.addEventListener('click', async () => {
+        if (!confirm('SOUフォルダのJCSHMS.CSVとJANCODE.CSVを新しいファイルに置き換えましたか？\n\nこの操作は時間がかかる場合があります。続行しますか？')) {
+            return;
+        }
+
+        // ユーザーに応答を返すために、結果表示用のテーブルを準備
+        const resultContainer = document.getElementById('upload-output-container');
+        const inOutView = document.getElementById('in-out-view');
+        const uploadView = document.getElementById('upload-view');
+        
+        resultContainer.innerHTML = `
+            <div class="table-container">
+                <h3>JCSHMSマスター更新処理中...</h3>
+                <p>ブラウザを閉じないでください。</p>
+            </div>`;
+        inOutView.classList.add('hidden');
+        uploadView.classList.remove('hidden');
+
+
+        try {
+            const res = await fetch('/api/master/update-jcshms', {
+                method: 'POST',
+            });
+            const resData = await res.json();
+            if (!res.ok) {
+                throw new Error(resData.message || '更新処理に失敗しました。');
+            }
+            
+            // 結果を表示
+            let resultHTML = `
+                <div class="table-container">
+                    <h3>${resData.message}</h3>
+                    <p>以下の製品マスターが更新されました。</p>
+                    <table class="data-table">
+                        <thead><tr><th>JANコード</th><th>製品名</th></tr></thead>
+                        <tbody>`;
+            
+            resData.updatedProducts.forEach(p => {
+                resultHTML += `<tr><td>${p.janCode}</td><td class="left">${p.productName}</td></tr>`;
+            });
+
+            resultHTML += `</tbody></table></div>`;
+            resultContainer.innerHTML = resultHTML;
+
+        } catch (err) {
+            console.error(err);
+            resultContainer.innerHTML = `<div class="table-container" style="color:red;">エラー: ${err.message}</div>`;
+        }
+    });
+}
+
+----- C:\Dev\KARASHI\static\js\usage.js -----
+// File: static/js/usage.js (最終修正版)
+import { createUploadTableHTML, renderUploadTableRows } from './common_table.js';
+
+const usageBtn = document.getElementById('usageBtn');
+const usageInput = document.getElementById('usageFileInput');
+const uploadContainer = document.getElementById('upload-output-container');
+
+// ▼▼▼ 修正点: リセット関数をエクスポート ▼▼▼
+export function resetUsageUploadView() {
+    uploadContainer.innerHTML = createUploadTableHTML('upload-output-table');
+}
+
+export function initUsageUpload() {
+    if(!usageBtn || !usageInput || !uploadContainer) return;
+
+    usageBtn.addEventListener('click', () => {
+        usageInput.click();
+    });
+
+    usageInput.addEventListener('change', async e => {
+        if (!e.target.files.length) return;
+        const tbody = document.querySelector('#upload-output-table tbody');
+        tbody.innerHTML = `<tr><td colspan="14" style="text-align:center;">アップロード処理中...</td></tr>`;
+        try {
+            const formData = new FormData();
+            for (const f of e.target.files) formData.append('file', f);
+            const res = await fetch('/api/usage/upload', { method: 'POST', body: formData });
+            if (!res.ok) throw new Error(res.status);
+            const data = await res.json();
+            renderUploadTableRows('upload-output-table', data.records);
+        } catch (err) {
+            tbody.innerHTML = `<tr><td colspan="14" style="color:red; text-align:center;">処理失敗: ${err.message}</td></tr>`;
+        }
+    });
+}
+
+----- C:\Dev\KARASHI\static\index.html -----
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>KARASHI</title>
+    <link rel="stylesheet" href="/static/css/styles.css">
+    <link rel="stylesheet" href="/static/css/table_layout.css">
+</head>
+<body>
+
+<header>
+    <button id="inOutViewBtn" class="btn">入庫・出庫</button>
+    <button id="masterEditViewBtn" class="btn">マスター</button>
+    <button id="datBtn" class="btn">納品・返品</button>
+    <button id="usageBtn" class="btn">処方 (USAGE) ファイル選択</button>
+    <button id="exportClientsBtn" class="btn">得意先エクスポート</button>
+    <button id="importClientsBtn" class="btn">得意先インポート</button>
+    <button id="exportProductsBtn" class="btn">製品エクスポート</button>
+    <button id="importProductsBtn" class="btn">製品インポート</button>
+    <button id="updateJcshmsBtn" class="btn">JCSHMSマスター更新</button>
+    <button id="aggregationBtn" class="btn">集計</button>
+    <input type="file" id="importClientsInput" style="display:none;" accept=".csv">
+    <input type="file" id="importProductsInput" style="display:none;" accept=".csv">
+</header>
+
+    <main>
+        <div id="upload-view" class="hidden">
+            <input type="file" id="datFileInput" multiple style="display:none;">
+            <input type="file" id="usageFileInput" style="display:none;">
+            <div id="upload-output-container" class="table-container">
+            </div>
+         </div>
+
+        <div id="in-out-view" class="hidden">
+             <div class="in-out-header">
+                <h1>入庫出庫</h1>
+            </div>
+
+            <div class="section">
+                <h2>表1: div2までの表</h2>
+                <table id="controller-table" class="data-table" cellspacing="0" cellpadding="0">
+                    <thead>
+                        <tr>
+                            <td class="center" style="width: 10%;">日付</td>
+                            <td class="center" style="width: 10%;">種別</td>
+                            <td style="width: 25%;"></td> <td class="center" style="width: 5%;">税率</td>
+                            <td class="center" style="width: 20%;">得意先</td>
+                            <td class="center" style="width: 20%;">伝票番号</td>
+                            <td class="center" style="width: 10%;">保存・削除</td>
+                        </tr>
+                    </thead>
+                    <tbody>
+                         <tr>
+                            <td><input type="date" id="in-out-date"></td>
+                            <td><select id="in-out-type"><option>入庫</option><option>出庫</option></select></td>
+                            <td></td> <td><input type="text" id="in-out-taxrate" value="10"></td>
+                            <td><select id="in-out-client" style="width:100%;"></select></td>
+                            <td><select id="in-out-receipt" style="width:100%;"></select></td>
+                            <td style="display: flex; gap: 5px;">
+                                <button id="saveBtn" class="btn">保存</button>
+                                <button id="deleteBtn" class="btn">伝票削除</button>
+                            </td>
+                         </tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="section">
+                <h2>表2: div3からの表</h2>
+                 <div id="details-table-container">
+                    <table id="details-table" class="data-table" cellspacing="0" cellpadding="0">
+                        <thead>
+                            <tr>
+                                <td rowspan="2" class="center">日付</td>
+                                <td rowspan="2" class="center">種別</td>
+                                <td class="center">YJ</td>
+                                 <td colspan="2" class="center">製品名</td>
+                                <td rowspan="2" class="center">個数</td>
+                                <td class="center">JAN数量</td>
+                                 <td class="center">JAN包装数量</td>
+                                <td class="center">JAN単位</td>
+                                <td class="center">単価</td>
+                                 <td class="center">税額</td>
+                                <td class="center">期限</td>
+                                <td class="center">ロット</td>
+                                <td class="center"><button id="addRowBtn">追加</button></td>
+                            </tr>
+                            <tr>
+                                <td class="center">JAN</td>
+                                <td class="center">包装</td>
+                                <td class="center">メーカー</td>
+                                 <td class="center">YJ数量</td>
+                                <td class="center">YJ包装数量</td>
+                                <td class="center">YJ単位</td>
+                                 <td class="center">金額</td>
+                                <td class="center">税率</td>
+                                <td class="center">得意先</td>
+                                 <td class="center">伝票番号</td>
+                                <td class="center">行</td>
+                            </tr>
+                        </thead>
+                         <tbody>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+             <div id="search-modal" class="modal-overlay hidden">
+                <div class="modal-content">
+                    <div class="modal-header">
+                         <h2>薬品検索</h2>
+                         <button id="closeModalBtn" class="close-button">&times;</button>
+                     </div>
+                    <div style="margin-bottom: 10px; display: flex; gap: 5px;">
+                        <input type="text" id="product-search-input" placeholder="製品名またはカナ名（2文字以上）" style="flex-grow: 1; padding: 5px;">
+                        <button id="product-search-btn" class="btn">検索</button>
+                    </div>
+                    <div class="modal-body" id="search-results-container">
+                        <table class="data-table" id="search-results-table">
+                             <thead>
+                                <tr>
+                                    <th>製品名</th>
+                                     <th>メーカー</th>
+                                    <th>包装</th>
+                                    <th>YJコード</th>
+                                     <th>JANコード</th>
+                                    <th>選択</th>
+                                 </tr>
+                            </thead>
+                            <tbody>
+                            </tbody>
+                         </table>
+                    </div>
+                 </div>
+            </div>
+        </div>
+
+<div id="master-edit-view" class="hidden">
+    <div class="in-out-header">
+        <h1>マスター編集</h1>
+        <div>
+             <button id="addMasterRowBtn" class="btn">新規行を追加</button>
+            <button id="refreshMastersBtn" class="btn">一覧を更新</button>
+        </div>
+    </div>
+    <div class="table-container">
+        <table id="master-edit-table" class="data-table">
+            <thead>
+                </thead>
+            <tbody>
+                 </tbody>
+        </table>
+        </div>
+</div>
+
+<div id="aggregation-view" class="hidden">
+    <div class="in-out-header">
+        <h1>集計</h1>
+    </div>
+
+    <div class="filter-container" style="border: 1px solid #ccc; padding: 15px; margin-bottom: 20px; display: flex; flex-wrap: wrap; gap: 20px; align-items: center;">
+        <div class="filter-group">
+            <label for="startDate">開始</label>
+            <input type="date" id="startDate">
+        </div>
+        <div class="filter-group">
+            <label for="endDate">終了</label>
+            <input type="date" id="endDate">
+        </div>
+        <div class="filter-group">
+            <label for="kanaName">カナ名</label>
+            <input type="text" id="kanaName" placeholder="（部分一致）">
+        </div>
+        <div class="filter-group">
+            <label>薬の種類</label>
+            <div class="filter-group-checkbox" style="display: flex; flex-wrap: wrap; gap: 5px 15px; align-items: center;">
+                <label><input type="checkbox" name="drugType" value="poison"> 毒薬</label>
+                <label><input type="checkbox" name="drugType" value="deleterious"> 劇薬</label>
+                <label><input type="checkbox" name="drugType" value="narcotic"> 麻薬</label>
+                <label><input type="checkbox" name="drugType" value="psychotropic1"> 向精神薬(1)</label>
+                 <label><input type="checkbox" name="drugType" value="psychotropic2"> 向精神薬(2)</label>
+                <label><input type="checkbox" name="drugType" value="psychotropic3"> 向精神薬(3)</label>
+                <label><input type="checkbox" name="drugType" value="stimulant"> 覚醒剤</label>
+                <label><input type="checkbox" name="drugType" value="stimulant_raw"> 覚醒剤原料</label>
+                <label style="border-left: 2px solid #999; padding-left: 15px; margin-left: 5px;"><input type="checkbox" id="no-movement-filter"> 動きのない品目</label>
+            </div>
+        </div>
+        <button id="run-aggregation-btn" class="btn">集計実行</button>
+        <button id="print-aggregation-btn" class="btn">印刷</button>
+    </div>
+    
+    <div id="aggregation-output-container" class="table-container">
+        </div>
+</div>
+</main>
+
+    </main>
+
+    <script type="module" src="/static/js/app.js"></script>
+
+</body>
+</html>
+
+----- C:\Dev\KARASHI\transaction\handler.go -----
+// File: transaction/handler.go (New File)
+package transaction
+
+import (
+	"database/sql"
+	"encoding/json"
+	"karashi/db"
+	"net/http"
+	"strings"
+)
+
+// GetReceiptsHandler handles fetching receipt numbers by date.
+func GetReceiptsHandler(conn *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		date := r.URL.Query().Get("date")
+		if date == "" {
+			http.Error(w, "Date parameter is required", http.StatusBadRequest)
+			return
+		}
+		numbers, err := db.GetReceiptNumbersByDate(conn, date)
+		if err != nil {
+			http.Error(w, "Failed to get receipt numbers", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(numbers)
+	}
+}
+
+// GetTransactionHandler handles fetching all details for a specific receipt number.
+func GetTransactionHandler(conn *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		receiptNumber := strings.TrimPrefix(r.URL.Path, "/api/transaction/")
+		if receiptNumber == "" {
+			http.Error(w, "Receipt number is required", http.StatusBadRequest)
+			return
+		}
+		records, err := db.GetTransactionsByReceiptNumber(conn, receiptNumber)
+		if err != nil {
+			http.Error(w, "Failed to get transaction details", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(records)
+	}
+}
+
+// DeleteTransactionHandler handles deleting an entire transaction slip.
+func DeleteTransactionHandler(conn *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		receiptNumber := strings.TrimPrefix(r.URL.Path, "/api/transaction/delete/")
+		if receiptNumber == "" {
+			http.Error(w, "Receipt number is required", http.StatusBadRequest)
+			return
+		}
+
+		tx, err := conn.Begin()
+		if err != nil {
+			http.Error(w, "Failed to start transaction", http.StatusInternalServerError)
+			return
+		}
+		defer tx.Rollback()
+
+		if err := db.DeleteTransactionsByReceiptNumberInTx(tx, receiptNumber); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		if err := tx.Commit(); err != nil {
+			http.Error(w, "Failed to commit transaction", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"message": "Slip deleted successfully"})
+	}
+}
+
+
+----- C:\Dev\KARASHI\units\units.go -----
+// File: units/units.go (修正版)
+package units
+
+import (
+	"encoding/csv"
+	"fmt"
+	"io"
+	"karashi/model"
+	"os"
+
+	"golang.org/x/text/encoding/japanese"
+	"golang.org/x/text/transform"
+)
+
+var internalMap map[string]string
+var reverseMap map[string]string
+
+// ★★★ ここからが新しく追加・修正された部分 ★★★
+
+// resolveInnerUnitはJA007のコードから内包装の単位を解決するヘルパー関数です。
+// 0や空の場合は空文字を返します。
+func resolveInnerUnit(unitCode string) string {
+	if unitCode != "0" && unitCode != "" {
+		return ResolveName(unitCode)
+	}
+	return ""
+}
+
+// FormatPackageSpecは、JCSHMSのデータから仕様通りの包装文字列を生成します。
+func FormatPackageSpec(jcshms *model.JCShms) string {
+	if jcshms == nil {
+		return ""
+	}
+
+	yjUnitName := ResolveName(jcshms.JC039)
+	pkg := fmt.Sprintf("%s %g%s", jcshms.JC037, jcshms.JC044, yjUnitName)
+
+	if jcshms.JA006.Valid && jcshms.JA008.Valid && jcshms.JA008.Float64 != 0 {
+		// 新しいヘルパー関数を呼び出して単位を取得
+		innerUnit := resolveInnerUnit(jcshms.JA007.String)
+
+		pkg += fmt.Sprintf(" (%g%s×%g%s)",
+			jcshms.JA006.Float64,
+			yjUnitName,
+			jcshms.JA008.Float64,
+			innerUnit,
+		)
+	}
+	return pkg
+}
+
+// ★★★ ここまで ★★★
+
+func LoadTANIFile(path string) (map[string]string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("LoadTANIFile: open %s: %w", path, err)
+	}
+	defer file.Close()
+
+	decoder := japanese.ShiftJIS.NewDecoder()
+	reader := csv.NewReader(transform.NewReader(file, decoder))
+	reader.LazyQuotes = true
+	reader.FieldsPerRecord = -1
+
+	m := make(map[string]string)
+	for {
+		record, err := reader.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("LoadTANIFile: read %s: %w", path, err)
+		}
+		if len(record) < 2 {
+			continue
+		}
+		code := record[0]
+		name := record[1]
+		m[code] = name
+	}
+	internalMap = m
+
+	reverseMap = make(map[string]string)
+	for code, name := range internalMap {
+		reverseMap[name] = code
+	}
+
+	return m, nil
+}
+
+func ResolveName(code string) string {
+	if internalMap == nil {
+		return code
+	}
+	if name, ok := internalMap[code]; ok {
+		return name
+	}
+	return code
+}
+
+func ResolveCode(name string) string {
+	if reverseMap == nil {
+		return ""
+	}
+	if code, ok := reverseMap[name]; ok {
+		return code
+	}
+	return ""
+}
+
+
+----- C:\Dev\KARASHI\updatemaster\handler.go -----
+// File: updatemaster/handler.go (修正版)
+package updatemaster
+
+import (
+	"database/sql"
+	"encoding/csv"
+	"encoding/json"
+	"fmt"
+	"karashi/db"
+	"karashi/model"
+	"log"
+	"net/http"
+	"os"
+	"strconv"
+
+	"golang.org/x/text/encoding/japanese"
+	"golang.org/x/text/transform"
+)
+
+// UpdatedProduct は更新された製品情報をフロントエンドに返すための構造体です
+type UpdatedProduct struct {
+	JanCode     string `json:"janCode"`
+	ProductName string `json:"productName"`
+}
+
+// JCSHMSUpdateHandler は product_master を新しいJCSHMSデータで更新します
+func JCSHMSUpdateHandler(conn *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// 1. 新しいJCSHMS/JANCODEをメモリに読み込む
+		newJcshmsData, err := loadCSVToMap("SOU/JCSHMS.CSV", true)
+		if err != nil {
+			http.Error(w, "Failed to load new JCSHMS.CSV", http.StatusInternalServerError)
+			return
+		}
+		newJancodeData, err := loadCSVToMap("SOU/JANCODE.CSV", true)
+		if err != nil {
+			http.Error(w, "Failed to load new JANCODE.CSV", http.StatusInternalServerError)
+			return
+		}
+
+		// 2. DBから現在の product_master を全件取得
+		productMasters, err := db.GetAllProductMasters(conn)
+		if err != nil {
+			http.Error(w, "Failed to get product masters", http.StatusInternalServerError)
+			return
+		}
+
+		var updatedProducts []UpdatedProduct
+
+		tx, err := conn.Begin()
+		if err != nil {
+			http.Error(w, "Failed to start transaction", http.StatusInternalServerError)
+			return
+		}
+		defer tx.Rollback()
+
+		// 3. product_masterをループし、新しいデータと照合・更新
+		for _, master := range productMasters {
+			janCode := master.ProductCode
+			newJcshmsRow, jcshmsExists := newJcshmsData[janCode]
+
+			if !jcshmsExists {
+				continue // 新しいJCSHMSに存在しないものはスキップ
+			}
+
+			input, err := createInputFromCSV(newJcshmsRow, newJancodeData[janCode])
+			if err != nil {
+				log.Printf("[WARN] Skipping update for JAN %s due to data error: %v", janCode, err)
+				continue
+			}
+
+			if err := db.UpsertProductMasterInTx(tx, input); err != nil {
+				http.Error(w, fmt.Sprintf("Failed to update master for %s", janCode), http.StatusInternalServerError)
+				return
+			}
+
+			updatedProducts = append(updatedProducts, UpdatedProduct{
+				JanCode:     janCode,
+				ProductName: input.ProductName,
+			})
+		}
+
+		if err := tx.Commit(); err != nil {
+			http.Error(w, "Failed to commit transaction", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"message":         fmt.Sprintf("%d件の製品マスターを更新しました。", len(updatedProducts)),
+			"updatedProducts": updatedProducts,
+		})
+	}
+}
+
+// loadCSVToMapはCSVファイルを読み込み、最初の列をキーとしたマップを返します
+func loadCSVToMap(filepath string, skipHeader bool) (map[string][]string, error) {
+	f, err := os.Open(filepath)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	r := csv.NewReader(transform.NewReader(f, japanese.ShiftJIS.NewDecoder()))
+	r.LazyQuotes = true
+	r.FieldsPerRecord = -1
+	if skipHeader {
+		if _, err := r.Read(); err != nil {
+			return nil, err
+		}
+	}
+
+	dataMap := make(map[string][]string)
+	for {
+		row, err := r.Read()
+		if err != nil {
+			if err.Error() == "EOF" {
+				break
+			}
+			return nil, err
+		}
+		if len(row) > 0 {
+			dataMap[row[0]] = row
+		}
+	}
+	return dataMap, nil
+}
+
+// createInputFromCSVはCSVの行データからProductMasterInputを生成します
+func createInputFromCSV(jcshmsRow, jancodeRow []string) (model.ProductMasterInput, error) {
+	var input model.ProductMasterInput
+	// CSVの列は0から始まる。JC000はインデックス0。
+	if len(jcshmsRow) < 66 {
+		return input, fmt.Errorf("invalid jcshms row length, expected at least 66 columns, got %d", len(jcshmsRow))
+	}
+
+	input.ProductCode = jcshmsRow[0]  // JC000 (JAN)
+	input.YjCode = jcshmsRow[9]       // JC009
+	input.ProductName = jcshmsRow[18] // JC018
+	input.Origin = "JCSHMS"
+	input.KanaName = jcshmsRow[22]                                 // JC022
+	input.MakerName = jcshmsRow[30]                                // JC030
+	input.PackageSpec = jcshmsRow[37]                              // JC037
+	input.YjUnitName = jcshmsRow[39]                               // JC039
+	input.YjPackUnitQty, _ = strconv.ParseFloat(jcshmsRow[44], 64) // JC044
+	input.NhiPrice, _ = strconv.ParseFloat(jcshmsRow[50], 64)      // JC050
+	input.FlagPoison, _ = strconv.Atoi(jcshmsRow[61])              // JC061
+	input.FlagDeleterious, _ = strconv.Atoi(jcshmsRow[62])         // JC062
+	input.FlagNarcotic, _ = strconv.Atoi(jcshmsRow[63])            // JC063
+	input.FlagPsychotropic, _ = strconv.Atoi(jcshmsRow[64])        // JC064
+	input.FlagStimulant, _ = strconv.Atoi(jcshmsRow[65])           // JC065
+	input.FlagStimulantRaw, _ = strconv.Atoi(jcshmsRow[66])        // JC066
+
+	if len(jancodeRow) >= 9 {
+		input.JanPackInnerQty, _ = strconv.ParseFloat(jancodeRow[6], 64) // JA006
+		input.JanUnitCode, _ = strconv.Atoi(jancodeRow[7])               // JA007
+		input.JanPackUnitQty, _ = strconv.ParseFloat(jancodeRow[8], 64)  // JA008
+	}
+
+	return input, nil
+}
+
+
+----- C:\Dev\KARASHI\usage\handler.go -----
+// File: usage/handler.go
+package usage
+
+import (
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"karashi/central"
+	"karashi/db"
+	"karashi/model"
+	"log"
+	"net/http"
+)
+
+func UploadUsageHandler(conn *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(32 << 20); err != nil {
+			http.Error(w, "File upload error: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		defer r.MultipartForm.RemoveAll()
+
+		var allParsed []model.UnifiedInputRecord
+		for _, fh := range r.MultipartForm.File["file"] {
+			f, _ := fh.Open()
+			defer f.Close()
+			recs, _ := ParseUsage(f)
+			allParsed = append(allParsed, recs...)
+		}
+		filtered := removeUsageDuplicates(allParsed)
+
+		if len(filtered) == 0 {
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			json.NewEncoder(w).Encode(map[string]interface{}{"records": []model.TransactionRecord{}})
+			return
+		}
+
+		tx, err := conn.Begin()
+		if err != nil {
+			log.Printf("Failed to begin transaction for usage: %v", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		defer tx.Rollback()
+
+		// ✨ 修正点: tx を渡す
+		finalRecords, err := central.ProcessUsageRecords(tx, conn, filtered)
+		if err != nil {
+			log.Printf("central.ProcessUsageRecords failed: %v", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		minDate, maxDate := "99999999", "00000000"
+		for _, rec := range filtered {
+			if rec.Date < minDate {
+				minDate = rec.Date
+			}
+			if rec.Date > maxDate {
+				maxDate = rec.Date
+			}
+		}
+
+		if err := db.DeleteUsageTransactionsInDateRange(tx, minDate, maxDate); err != nil {
+			log.Printf("db.DeleteUsageTransactionsInDateRange error: %v", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		if len(finalRecords) > 0 {
+			if err := db.PersistTransactionRecordsInTx(tx, finalRecords); err != nil {
+				log.Printf("PersistTransactionRecordsInTx error: %v", err)
+				http.Error(w, "internal server error", http.StatusInternalServerError)
+				return
+			}
+		}
+
+		if err := tx.Commit(); err != nil {
+			log.Printf("transaction commit error: %v", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"records": finalRecords,
+		})
+	}
+}
+
+// removeUsageDuplicatesはUSAGE固有の重複排除ロジック
+func removeUsageDuplicates(rs []model.UnifiedInputRecord) []model.UnifiedInputRecord {
+	seen := make(map[string]struct{})
+	var out []model.UnifiedInputRecord
+	for _, r := range rs {
+		key := fmt.Sprintf("%s|%s|%s|%s", r.Date, r.JanCode, r.YjCode, r.ProductName)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, r)
+	}
+	return out
+}
+
+
+----- C:\Dev\KARASHI\usage\parser.go -----
+// File: usage/parser.go
+package usage
+
+import (
+	"encoding/csv"
+	"fmt"
+	"io"
+	"karashi/model"
+	"strconv"
+
+	"golang.org/x/text/encoding/japanese"
+	"golang.org/x/text/transform"
+)
+
+// ParseUsageはUSAGE CSVを解析し、UnifiedInputRecordのスライスを返します。
+func ParseUsage(r io.Reader) ([]model.UnifiedInputRecord, error) {
+	reader := csv.NewReader(transform.NewReader(r, japanese.ShiftJIS.NewDecoder()))
+	reader.FieldsPerRecord = -1
+
+	var records []model.UnifiedInputRecord
+	for {
+		rec, err := reader.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("csv read error: %w", err)
+		}
+
+		yjQty, _ := strconv.ParseFloat(rec[4], 64)
+
+		unifiedRec := model.UnifiedInputRecord{
+			Date:        rec[0],
+			YjCode:      rec[1],
+			JanCode:     rec[2],
+			ProductName: rec[3],
+			YjQuantity:  yjQty,
+			YjUnitName:  rec[5],
+		}
+		records = append(records, unifiedRec)
+	}
+	return records, nil
+}
+
+
+----- C:\Dev\KARASHI\main.go -----
+// File: main.go (Corrected)
+package main
+
+import (
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"karashi/aggregation"
+	"karashi/backup"
+	"karashi/dat"
+	"karashi/db"
+	"karashi/inout"
+	"karashi/loader"
+	"karashi/masteredit"
+	"karashi/transaction"
+	"karashi/units"
+	"karashi/updatemaster" // ★ ADD THIS IMPORT
+	"karashi/usage"
+	"log"
+	"net/http"
+	"os/exec"
+	"runtime"
+
+	"golang.org/x/text/encoding/japanese"
+	"golang.org/x/text/transform"
+
+	_ "github.com/mattn/go-sqlite3"
+)
+
+func findInvalidCharacters(conn *sql.DB) {
+	fmt.Println("--- Shift_JIS変換チェックを開始します ---")
+
+	// 製品マスターをチェック
+	products, err := db.GetAllProductMasters(conn)
+	if err != nil {
+		log.Fatalf("製品マスターの取得に失敗: %v", err)
+	}
+
+	for _, p := range products {
+		checkAndReport("製品マスター", p.ProductCode, "製品名", p.ProductName)
+		checkAndReport("製品マスター", p.ProductCode, "カナ名", p.KanaName)
+		checkAndReport("製品マスター", p.ProductCode, "メーカー名", p.MakerName)
+		checkAndReport("製品マスター", p.ProductCode, "包装", p.PackageSpec)
+	}
+
+	// 得意先マスターをチェック
+	clients, err := db.GetAllClients(conn)
+	if err != nil {
+		log.Fatalf("得意先マスターの取得に失敗: %v", err)
+	}
+
+	for _, c := range clients {
+		checkAndReport("得意先マスター", c.Code, "得意先名", c.Name)
+	}
+
+	fmt.Println("--- チェックが完了しました ---")
+}
+
+// Shift_JISに変換できるかチェックし、失敗したらレポートするヘルパー関数
+func checkAndReport(table, code, field, value string) {
+	encoder := japanese.ShiftJIS.NewEncoder()
+	_, _, err := transform.String(encoder, value)
+	if err != nil {
+		fmt.Printf("【エラー】 テーブル「%s」のレコード「%s」の項目「%s」に変換できない文字が含まれています。\n  -> 値: %s\n", table, code, field, value)
+	}
+}
+
+// ▲▲▲ 診断コード ▲▲▲
+
+func main() {
+	conn, err := sql.Open("sqlite3", "yamato.db")
+	if err != nil {
+		log.Fatalf("db open error: %v", err)
+	}
+	defer conn.Close()
+
+	if err := loader.InitDatabase(conn); err != nil {
+		log.Fatalf("master init failed: %v", err)
+	}
+	if _, err := units.LoadTANIFile("SOU/TANI.CSV"); err != nil {
+		log.Fatalf("tani init failed: %v", err)
+	}
+	log.Println("master init complete")
+
+	findInvalidCharacters(conn) // ★この行を追加
+
+	mux := http.NewServeMux()
+
+	// Client-related handlers
+	mux.HandleFunc("/api/clients", func(w http.ResponseWriter, r *http.Request) {
+		clients, err := db.GetAllClients(conn)
+		if err != nil {
+			http.Error(w, "Failed to get clients", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(clients)
+	})
+
+	// Product search handler
+	mux.HandleFunc("/api/products/search", func(w http.ResponseWriter, r *http.Request) {
+		query := r.URL.Query().Get("q")
+		if len(query) < 2 {
+			http.Error(w, "Query must be at least 2 characters", http.StatusBadRequest)
+			return
+		}
+		results, err := db.SearchJcshmsByName(conn, query)
+		if err != nil {
+			http.Error(w, "Failed to search products", http.StatusInternalServerError)
+			log.Printf("SearchJcshmsByName error: %v", err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(results)
+	})
+
+	// Master edit handler
+	mux.HandleFunc("/api/masters/editable", masteredit.GetEditableMastersHandler(conn))
+	mux.HandleFunc("/api/master/update", masteredit.UpdateMasterHandler(conn))
+	mux.HandleFunc("/api/master/update-jcshms", updatemaster.JCSHMSUpdateHandler(conn))
+
+	// Handlers from dedicated packages
+	mux.Handle("/api/dat/upload", dat.UploadDatHandler(conn))
+	mux.Handle("/api/usage/upload", usage.UploadUsageHandler(conn))
+	mux.Handle("/api/inout/save", inout.SaveInOutHandler(conn))
+	mux.HandleFunc("/api/receipts", transaction.GetReceiptsHandler(conn))
+	mux.HandleFunc("/api/transaction/", transaction.GetTransactionHandler(conn))
+	mux.HandleFunc("/api/transaction/delete/", transaction.DeleteTransactionHandler(conn))
+	mux.HandleFunc("/api/clients/export", backup.ExportClientsHandler(conn))
+	mux.HandleFunc("/api/clients/import", backup.ImportClientsHandler(conn))
+	mux.HandleFunc("/api/products/export", backup.ExportProductsHandler(conn))
+	mux.HandleFunc("/api/products/import", backup.ImportProductsHandler(conn))
+	mux.HandleFunc("/api/aggregation", aggregation.GetAggregationHandler(conn))
+
+	// Static file and root handler
+	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("./static"))))
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFile(w, r, "./static/index.html")
+	})
+
+	port := ":8080"
+	go openBrowser("http://localhost" + port)
+	log.Printf("starting on %s", port)
+	if err := http.ListenAndServe(port, mux); err != nil {
+		log.Fatalf("server failed: %v", err)
+	}
+}
+
+func openBrowser(url string) {
+	var err error
+	switch runtime.GOOS {
+	case "linux":
+		err = exec.Command("xdg-open", url).Start()
+	case "windows":
+		err = exec.Command("rundll32", "url.dll,FileProtocolHandler", url).Start()
+	case "darwin":
+		err = exec.Command("open", url).Start()
+	default:
+		err = fmt.Errorf("unsupported platform")
+	}
+	if err != nil {
+		log.Printf("failed to open browser: %v", err)
+	}
+}
+
+
+----- C:\Dev\KARASHI\schema.sql -----
+-- File: schema.sql (修正版)
+
+-- 得意先マスターテーブル
+CREATE TABLE IF NOT EXISTS client_master (
+  client_code TEXT PRIMARY KEY,
+  client_name TEXT NOT NULL UNIQUE
+);
+
+-- 製品マスタ
+CREATE TABLE IF NOT EXISTS product_master (
+  product_code TEXT PRIMARY KEY, yj_code TEXT, product_name TEXT,  origin TEXT, kana_name TEXT, maker_name TEXT,
+  package_spec TEXT, yj_unit_name TEXT, yj_pack_unit_qty REAL, flag_poison INTEGER, flag_deleterious INTEGER,
+  flag_narcotic INTEGER, flag_psychotropic INTEGER, flag_stimulant INTEGER, flag_stimulant_raw INTEGER,
+  jan_pack_inner_qty REAL, jan_unit_code INTEGER, jan_pack_unit_qty REAL,
+  reorder_point REAL DEFAULT 0,
+  nhi_price REAL DEFAULT 0
+);
+
+-- トランザクションレコード
+CREATE TABLE IF NOT EXISTS transaction_records (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  transaction_date TEXT, client_code TEXT, receipt_number TEXT, line_number TEXT, flag INTEGER,
+  jan_code TEXT, yj_code TEXT, product_name TEXT, kana_name TEXT,
+  package_form TEXT,
+  package_spec TEXT,
+  maker_name TEXT,
+  dat_quantity REAL,
+  jan_pack_inner_qty REAL,
+  jan_quantity REAL,
+  jan_pack_unit_qty REAL, jan_unit_name TEXT, jan_unit_code TEXT,
+  yj_quantity REAL, yj_pack_unit_qty REAL, yj_unit_name TEXT, unit_price REAL, subtotal REAL,
+  tax_amount REAL, tax_rate REAL,
+  expiry_date TEXT,
+  lot_number TEXT,
+  flag_poison INTEGER,
+  flag_deleterious INTEGER, flag_narcotic INTEGER, flag_psychotropic INTEGER, flag_stimulant INTEGER,
+  flag_stimulant_raw INTEGER, process_flag_ma TEXT,
+  processing_status TEXT
+);
+
+-- JCSHMSマスタ
+CREATE TABLE IF NOT EXISTS jcshms (
+  JC000 TEXT, JC001 TEXT, JC002 TEXT, JC003 TEXT, JC004 TEXT, JC005 TEXT, JC006 TEXT, JC007 TEXT, JC008 TEXT, JC009 TEXT,
+  JC010 TEXT, JC011 TEXT, JC012 TEXT, JC013 TEXT, JC014 TEXT, JC015 TEXT, JC016 TEXT, JC017 TEXT, JC018 TEXT, JC019 TEXT,
+  JC020 TEXT, JC021 TEXT, JC022 TEXT, JC023 TEXT, JC024 TEXT, JC025 TEXT, JC026 TEXT, JC027 TEXT, JC028 TEXT, JC029 TEXT,
+  JC030 TEXT, JC031 TEXT, JC032 TEXT, JC033 TEXT, JC034 TEXT, JC035 TEXT, JC036 TEXT, JC037 TEXT, JC038 TEXT, JC039 TEXT,
+  JC040 TEXT, JC041 TEXT, JC042 TEXT, JC043 TEXT, JC044 REAL, JC045 TEXT, JC046 TEXT, JC047 TEXT, JC048 TEXT, JC049 TEXT,
+  JC050 REAL, JC051 TEXT, JC052 TEXT, JC053 TEXT, JC054 TEXT, JC055 TEXT, JC056 TEXT, JC057 TEXT, JC058 TEXT, JC059 TEXT,
+  JC060 TEXT, JC061 INTEGER, JC062 INTEGER, JC063 INTEGER, JC064 INTEGER, JC065 INTEGER, JC066 INTEGER, JC067 TEXT, JC068 TEXT, JC069 TEXT,
+  JC070 TEXT, JC071 TEXT, JC072 TEXT, JC073 TEXT, JC074 TEXT, JC075 TEXT, JC076 TEXT, JC077 TEXT, JC078 TEXT, JC079 TEXT,
+  JC080 TEXT, JC081 TEXT, JC082 TEXT, JC083 TEXT, JC084 TEXT, JC085 TEXT, JC086 TEXT, JC087 TEXT, JC088 TEXT, JC089 TEXT,
+  JC090 TEXT, JC091 TEXT, JC092 TEXT, JC093 TEXT, JC094 TEXT, JC095 TEXT, JC096 TEXT, JC097 TEXT, JC098 TEXT, JC099 TEXT,
+  JC100 TEXT, JC101 TEXT, JC102 TEXT, JC103 TEXT, JC104 TEXT, JC105 TEXT, JC106 TEXT, JC107 TEXT, JC108 TEXT, JC109 TEXT,
+  JC110 TEXT, JC111 TEXT, JC112 TEXT, JC113 TEXT, JC114 TEXT, JC115 TEXT, JC116 TEXT, JC117 TEXT, JC118 TEXT, JC119 TEXT,
+  JC120 TEXT, JC121 TEXT, JC122 TEXT, JC123 TEXT, JC124 TEXT,
+  PRIMARY KEY(JC000)
+);
+
+-- JANCODEマスタ
+CREATE TABLE IF NOT EXISTS jancode (
+  JA000 TEXT, JA001 TEXT, JA002 TEXT, JA003 TEXT, JA004 TEXT, JA005 TEXT, JA006 REAL, JA007 TEXT, JA008 REAL, JA009 TEXT,
+  JA010 TEXT, JA011 TEXT, JA012 TEXT, JA013 TEXT, JA014 TEXT, JA015 TEXT, JA016 TEXT, JA017 TEXT, JA018 TEXT, JA019 TEXT,
+  JA020 TEXT, JA021 TEXT, JA022 TEXT, JA023 TEXT, JA024 TEXT, JA025 TEXT, JA026 TEXT, JA027 TEXT, JA028 TEXT, JA029 TEXT,
+  PRIMARY KEY(JA001)
+);
+
+-- 自動採番シーケンス
+CREATE TABLE IF NOT EXISTS code_sequences (
+  name TEXT PRIMARY KEY,
+  last_no INTEGER NOT NULL
+);
+INSERT OR IGNORE INTO code_sequences(name, last_no) VALUES ('MA2Y', 0);
+INSERT OR IGNORE INTO code_sequences(name, last_no) VALUES ('CL', 0);
+

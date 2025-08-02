@@ -5,20 +5,67 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"karashi/aggregation"
+	"karashi/backup"
 	"karashi/dat"
 	"karashi/db"
 	"karashi/inout"
 	"karashi/loader"
-	"karashi/transaction" // ★ ADD THIS IMPORT
+	"karashi/masteredit"
+	"karashi/transaction"
 	"karashi/units"
+	"karashi/updatemaster" // ★ ADD THIS IMPORT
 	"karashi/usage"
 	"log"
 	"net/http"
 	"os/exec"
 	"runtime"
 
+	"golang.org/x/text/encoding/japanese"
+	"golang.org/x/text/transform"
+
 	_ "github.com/mattn/go-sqlite3"
 )
+
+func findInvalidCharacters(conn *sql.DB) {
+	fmt.Println("--- Shift_JIS変換チェックを開始します ---")
+
+	// 製品マスターをチェック
+	products, err := db.GetAllProductMasters(conn)
+	if err != nil {
+		log.Fatalf("製品マスターの取得に失敗: %v", err)
+	}
+
+	for _, p := range products {
+		checkAndReport("製品マスター", p.ProductCode, "製品名", p.ProductName)
+		checkAndReport("製品マスター", p.ProductCode, "カナ名", p.KanaName)
+		checkAndReport("製品マスター", p.ProductCode, "メーカー名", p.MakerName)
+		checkAndReport("製品マスター", p.ProductCode, "包装", p.PackageSpec)
+	}
+
+	// 得意先マスターをチェック
+	clients, err := db.GetAllClients(conn)
+	if err != nil {
+		log.Fatalf("得意先マスターの取得に失敗: %v", err)
+	}
+
+	for _, c := range clients {
+		checkAndReport("得意先マスター", c.Code, "得意先名", c.Name)
+	}
+
+	fmt.Println("--- チェックが完了しました ---")
+}
+
+// Shift_JISに変換できるかチェックし、失敗したらレポートするヘルパー関数
+func checkAndReport(table, code, field, value string) {
+	encoder := japanese.ShiftJIS.NewEncoder()
+	_, _, err := transform.String(encoder, value)
+	if err != nil {
+		fmt.Printf("【エラー】 テーブル「%s」のレコード「%s」の項目「%s」に変換できない文字が含まれています。\n  -> 値: %s\n", table, code, field, value)
+	}
+}
+
+// ▲▲▲ 診断コード ▲▲▲
 
 func main() {
 	conn, err := sql.Open("sqlite3", "yamato.db")
@@ -35,9 +82,9 @@ func main() {
 	}
 	log.Println("master init complete")
 
-	mux := http.NewServeMux()
+	findInvalidCharacters(conn) // ★この行を追加
 
-	// --- Register all API handlers ---
+	mux := http.NewServeMux()
 
 	// Client-related handlers
 	mux.HandleFunc("/api/clients", func(w http.ResponseWriter, r *http.Request) {
@@ -67,15 +114,23 @@ func main() {
 		json.NewEncoder(w).Encode(results)
 	})
 
+	// Master edit handler
+	mux.HandleFunc("/api/masters/editable", masteredit.GetEditableMastersHandler(conn))
+	mux.HandleFunc("/api/master/update", masteredit.UpdateMasterHandler(conn))
+	mux.HandleFunc("/api/master/update-jcshms", updatemaster.JCSHMSUpdateHandler(conn))
+
 	// Handlers from dedicated packages
 	mux.Handle("/api/dat/upload", dat.UploadDatHandler(conn))
 	mux.Handle("/api/usage/upload", usage.UploadUsageHandler(conn))
 	mux.Handle("/api/inout/save", inout.SaveInOutHandler(conn))
-
-	// ★★★ USE THE NEW, CLEANED-UP TRANSACTION HANDLERS ★★★
 	mux.HandleFunc("/api/receipts", transaction.GetReceiptsHandler(conn))
 	mux.HandleFunc("/api/transaction/", transaction.GetTransactionHandler(conn))
 	mux.HandleFunc("/api/transaction/delete/", transaction.DeleteTransactionHandler(conn))
+	mux.HandleFunc("/api/clients/export", backup.ExportClientsHandler(conn))
+	mux.HandleFunc("/api/clients/import", backup.ImportClientsHandler(conn))
+	mux.HandleFunc("/api/products/export", backup.ExportProductsHandler(conn))
+	mux.HandleFunc("/api/products/import", backup.ImportProductsHandler(conn))
+	mux.HandleFunc("/api/aggregation", aggregation.GetAggregationHandler(conn))
 
 	// Static file and root handler
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("./static"))))

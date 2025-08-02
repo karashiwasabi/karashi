@@ -4,8 +4,10 @@ import { setupDateDropdown, setupClientDropdown } from './common_table.js';
 const NEW_ENTRY_VALUE = '--new--';
 
 let clientSelect, receiptSelect, saveBtn, deleteBtn, headerDateInput, headerTypeSelect;
+
 let newClientName = null;
 let currentLoadedReceipt = null; // Variable to track the loaded slip
+
 
 async function initializeClientDropdown() {
     clientSelect.innerHTML = `<option value="">選択してください</option>`;
@@ -15,6 +17,22 @@ async function initializeClientDropdown() {
     newOption.value = NEW_ENTRY_VALUE;
     newOption.textContent = '--- 新規作成 ---';
     clientSelect.appendChild(newOption);
+}
+
+// ▼▼▼ 修正点: リセット関数をエクスポート ▼▼▼
+export function resetHeader() {
+    if (!clientSelect || !headerDateInput) return;
+    setupDateDropdown(headerDateInput);
+    initializeClientDropdown();
+    receiptSelect.innerHTML = `
+        <option value="">日付を選択してください</option>
+        <option value="${NEW_ENTRY_VALUE}">--- 新規作成 ---</option>
+    `;
+    headerTypeSelect.value = "入庫";
+    newClientName = null;
+    currentLoadedReceipt = null;
+    deleteBtn.disabled = true;
+    headerDateInput.dispatchEvent(new Event('change'));
 }
 
 export async function initHeader(getDetailsData, clearDetailsTable, populateDetailsTable) {

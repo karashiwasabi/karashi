@@ -119,3 +119,117 @@ header {
     background: none;
     cursor: pointer;
 }
+
+/* --- 集計結果の新しいスタイル (画面表示用) --- */
+.aggregation-group-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 20px; /* グループ間の余白 */
+    border: 1px solid #ccc;
+}
+
+.aggregation-group-table > thead > tr > th {
+    background-color: #f8f9fa;
+    padding: 10px;
+    text-align: left;
+    border-bottom: 2px solid #ccc;
+}
+
+.aggregation-group-table .agg-header-line1 {
+    font-weight: bold;
+    font-size: 16px;
+    color: #212529;
+    margin-bottom: 5px;
+}
+
+.aggregation-group-table .agg-header-line2 {
+    font-size: 14px;
+    color: #495057;
+    padding-left: 10px;
+}
+
+.aggregation-group-table .details-header th {
+    background-color: #e9ecef;
+    font-weight: bold;
+    text-align: center;
+}
+
+.aggregation-group-table td, 
+.aggregation-group-table th {
+    border: 1px solid #ccc;
+    padding: 4px 6px;
+    vertical-align: middle;
+}
+
+
+/* File: static/css/styles.css (@media print ブロックの全体) */
+
+/* --- 印刷専用スタイル --- */
+@media print {
+    /* 用紙設定 (A4縦、余白を縮小) */
+    @page {
+        size: A4 portrait;
+        margin: 10mm;
+    }
+
+    /* 印刷したくない要素をすべて非表示に */
+    body > header,
+    body > main > div:not(#aggregation-view),
+    #aggregation-view .in-out-header,
+    #aggregation-view .filter-container {
+        display: none !important;
+    }
+
+    /* 印刷コンテナを画面全体に広げる */
+    body, main, #aggregation-view, #aggregation-output-container {
+        display: block !important;
+        width: 100% !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        border: none !important;
+        box-shadow: none !important;
+        background: none !important;
+    }
+    
+    /* 繰り返しヘッダーの指定 */
+    .aggregation-group-table thead.repeating-header {
+        display: table-header-group;
+    }
+
+    /* グループ全体のテーブルスタイル (グループ間の余白を縮小) */
+    .aggregation-group-table {
+        page-break-inside: avoid;
+        margin-bottom: 3mm;
+        width: 100%;
+        border-collapse: collapse;
+    }
+    
+    /* 繰り返しヘッダーのスタイル (余白を縮小) */
+    .repeating-header th {
+        border: none;
+        padding: 0 0 2px 0;
+        text-align: left;
+        border-bottom: 2px solid #000;
+    }
+
+    /* ヘッダー内の文字の行間を縮小 */
+    .agg-header-line1, .agg-header-line2 {
+        line-height: 1.2;
+    }
+
+    /* 明細行のセルスタイル (余白と行間を縮小) */
+    .aggregation-group-table td,
+    .aggregation-group-table .details-header th {
+        font-size: 9pt;
+        border: 1px solid #666;
+        padding: 2px 3px;
+        line-height: 1.15;
+    }
+    
+    /* 背景色を強制的に印刷 (警告が出ていた箇所の修正版) */
+    .details-header th {
+        background-color: #e9ecef !important;
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+    }
+}
