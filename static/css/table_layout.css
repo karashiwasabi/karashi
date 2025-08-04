@@ -4,30 +4,33 @@
 .data-table {
     border-collapse: collapse;
     width: 100%;
-    min-width: 1235px; /* Googleスプレッドシートのピクセル幅合計 */
+    min-width: 1235px;
     table-layout: fixed;
-    border: 1px solid #ccc; /* 枠線の色を少し柔らかくします */
+    border: 1px solid #ccc;
 }
 .data-table th,
 .data-table td {
-    border: 1px solid #ccc; /* 枠線の色を少し柔らかくします */
+    border: 1px solid #ccc;
     background-color: #ffffff;
     text-align: left;
     font-family: 'docs-sans-serif', Arial;
     font-size: 11pt;
-    vertical-align: middle; /* topから変更 */
-    padding: 2px; /* パディングを少し狭くする */
+    vertical-align: middle;
+    padding: 2px;
     white-space: normal;
     word-break: break-all;
 }
-.data-table thead td {
-    background-color: #f0f0f0; /* ★背景色を薄いグレーに変更 */
+.data-table thead td,
+.data-table thead th {
+    background-color: #f0f0f0;
     text-align: center;
     font-weight: bold;
-    color: #000000; /* ★文字色を黒に変更 */
-    padding: 4px 6px; /* パディングを調整 */
+    color: #000000;
+    padding: 4px 6px;
     white-space: nowrap;
 }
+
+/* ★★★ 修正点: テーブルヘッダーのスティッキー設定を完全に削除 ★★★ */
 
 
 .data-table td input[type="text"],
@@ -41,14 +44,19 @@
     background-color: #fff;
 }
 
+.data-table td input.highlight-search {
+    background-color: #fffacd; /* 薄い黄色 */
+}
+
+
 .data-table td button {
     padding: 4px 8px;
     background-color: #f0f0f0;
     border: 1px solid #000;
-    cursor: pointer;
+    cursor: default;
     font-size: 10pt;
-    width: 100%; /* ボタンも幅100%に設定 */
-    box-sizing: border-box; /* パディングとボーダーを幅に含める */
+    width: 100%;
+    box-sizing: border-box;
 }
 
 .data-table td.center { text-align: center; }

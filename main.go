@@ -1,4 +1,4 @@
-// File: main.go (Corrected)
+// File: main.go
 package main
 
 import (
@@ -14,7 +14,7 @@ import (
 	"karashi/masteredit"
 	"karashi/transaction"
 	"karashi/units"
-	"karashi/updatemaster" // ★ ADD THIS IMPORT
+	"karashi/updatemaster"
 	"karashi/usage"
 	"log"
 	"net/http"
@@ -29,34 +29,26 @@ import (
 
 func findInvalidCharacters(conn *sql.DB) {
 	fmt.Println("--- Shift_JIS変換チェックを開始します ---")
-
-	// 製品マスターをチェック
 	products, err := db.GetAllProductMasters(conn)
 	if err != nil {
 		log.Fatalf("製品マスターの取得に失敗: %v", err)
 	}
-
 	for _, p := range products {
 		checkAndReport("製品マスター", p.ProductCode, "製品名", p.ProductName)
 		checkAndReport("製品マスター", p.ProductCode, "カナ名", p.KanaName)
 		checkAndReport("製品マスター", p.ProductCode, "メーカー名", p.MakerName)
 		checkAndReport("製品マスター", p.ProductCode, "包装", p.PackageSpec)
 	}
-
-	// 得意先マスターをチェック
 	clients, err := db.GetAllClients(conn)
 	if err != nil {
 		log.Fatalf("得意先マスターの取得に失敗: %v", err)
 	}
-
 	for _, c := range clients {
 		checkAndReport("得意先マスター", c.Code, "得意先名", c.Name)
 	}
-
 	fmt.Println("--- チェックが完了しました ---")
 }
 
-// Shift_JISに変換できるかチェックし、失敗したらレポートするヘルパー関数
 func checkAndReport(table, code, field, value string) {
 	encoder := japanese.ShiftJIS.NewEncoder()
 	_, _, err := transform.String(encoder, value)
@@ -64,8 +56,6 @@ func checkAndReport(table, code, field, value string) {
 		fmt.Printf("【エラー】 テーブル「%s」のレコード「%s」の項目「%s」に変換できない文字が含まれています。\n  -> 値: %s\n", table, code, field, value)
 	}
 }
-
-// ▲▲▲ 診断コード ▲▲▲
 
 func main() {
 	conn, err := sql.Open("sqlite3", "yamato.db")
@@ -82,7 +72,7 @@ func main() {
 	}
 	log.Println("master init complete")
 
-	findInvalidCharacters(conn) // ★この行を追加
+	findInvalidCharacters(conn)
 
 	mux := http.NewServeMux()
 
@@ -131,8 +121,10 @@ func main() {
 	mux.HandleFunc("/api/products/export", backup.ExportProductsHandler(conn))
 	mux.HandleFunc("/api/products/import", backup.ImportProductsHandler(conn))
 	mux.HandleFunc("/api/aggregation", aggregation.GetAggregationHandler(conn))
+	mux.HandleFunc("/api/transactions/reprocess", transaction.ReProcessTransactionsHandler(conn))
 
 	// Static file and root handler
+	// ▼▼▼ 修正点: "http.dir" を "http.Dir" に修正 ▼▼▼
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("./static"))))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		http.ServeFile(w, r, "./static/index.html")

@@ -1,4 +1,4 @@
-// File: db/aggregation.go (最終修正版)
+// File: db/aggregation.go
 package db
 
 import (
@@ -80,7 +80,6 @@ func GetAggregatedTransactions(conn *sql.DB, filters model.AggregationFilters) (
 			txArgs = append(txArgs, filters.EndDate)
 		}
 
-		// ▼▼▼ 修正点: 日付順ソートを追加 ▼▼▼
 		transactionQuery += " ORDER BY transaction_date"
 
 		txRows, err := conn.Query(transactionQuery, txArgs...)
@@ -147,8 +146,8 @@ func GetAggregatedTransactions(conn *sql.DB, filters model.AggregationFilters) (
 			pkgGroup := &yjGroup.PackageGroups[i]
 			for _, t := range pkgGroup.Transactions {
 				signedJanQty, signedYjQty := t.JanQuantity, t.YjQuantity
-				// ▼▼▼ 修正点: 符号反転の条件を「2 または 3」に変更 ▼▼▼
-				if t.Flag == 2 || t.Flag == 3 {
+				// ★★★ 修正点: 符号反転の条件に「12 (出庫)」を追加 ★★★
+				if t.Flag == 2 || t.Flag == 3 || t.Flag == 12 {
 					signedJanQty = -signedJanQty
 					signedYjQty = -signedYjQty
 				}
@@ -178,16 +177,29 @@ func GetAggregatedTransactions(conn *sql.DB, filters model.AggregationFilters) (
 	// --- Step 5: 「動きのない品目」フィルターを適用 ---
 	var filteredResult []model.YJGroup
 	for _, yjGroup := range result {
+		hasPrescription := false
 		totalTransactions := 0
 		for _, pg := range yjGroup.PackageGroups {
 			totalTransactions += len(pg.Transactions)
+			// 処方(flag=3)があるかチェック
+			for _, t := range pg.Transactions {
+				if t.Flag == 3 {
+					hasPrescription = true
+					break
+				}
+			}
+			if hasPrescription {
+				break
+			}
 		}
 
 		if filters.NoMovement {
-			if totalTransactions == 0 {
+			// 「動きのない品目」がチェックされている場合は、「処方がなかった」品目を表示する
+			if !hasPrescription {
 				filteredResult = append(filteredResult, yjGroup)
 			}
 		} else {
+			// チェックされていない場合は、これまで通り「何らかの動きがあった」品目を表示する
 			if totalTransactions > 0 {
 				filteredResult = append(filteredResult, yjGroup)
 			}

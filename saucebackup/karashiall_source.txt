@@ -769,7 +769,7 @@ func ParseDat(r io.Reader) ([]model.UnifiedInputRecord, error) {
 
 
 ----- C:\Dev\KARASHI\db\aggregation.go -----
-// File: db/aggregation.go (最終修正版)
+// File: db/aggregation.go
 package db
 
 import (
@@ -851,7 +851,6 @@ func GetAggregatedTransactions(conn *sql.DB, filters model.AggregationFilters) (
 			txArgs = append(txArgs, filters.EndDate)
 		}
 
-		// ▼▼▼ 修正点: 日付順ソートを追加 ▼▼▼
 		transactionQuery += " ORDER BY transaction_date"
 
 		txRows, err := conn.Query(transactionQuery, txArgs...)
@@ -918,8 +917,8 @@ func GetAggregatedTransactions(conn *sql.DB, filters model.AggregationFilters) (
 			pkgGroup := &yjGroup.PackageGroups[i]
 			for _, t := range pkgGroup.Transactions {
 				signedJanQty, signedYjQty := t.JanQuantity, t.YjQuantity
-				// ▼▼▼ 修正点: 符号反転の条件を「2 または 3」に変更 ▼▼▼
-				if t.Flag == 2 || t.Flag == 3 {
+				// ★★★ 修正点: 符号反転の条件に「12 (出庫)」を追加 ★★★
+				if t.Flag == 2 || t.Flag == 3 || t.Flag == 12 {
 					signedJanQty = -signedJanQty
 					signedYjQty = -signedYjQty
 				}
@@ -949,16 +948,29 @@ func GetAggregatedTransactions(conn *sql.DB, filters model.AggregationFilters) (
 	// --- Step 5: 「動きのない品目」フィルターを適用 ---
 	var filteredResult []model.YJGroup
 	for _, yjGroup := range result {
+		hasPrescription := false
 		totalTransactions := 0
 		for _, pg := range yjGroup.PackageGroups {
 			totalTransactions += len(pg.Transactions)
+			// 処方(flag=3)があるかチェック
+			for _, t := range pg.Transactions {
+				if t.Flag == 3 {
+					hasPrescription = true
+					break
+				}
+			}
+			if hasPrescription {
+				break
+			}
 		}
 
 		if filters.NoMovement {
-			if totalTransactions == 0 {
+			// 「動きのない品目」がチェックされている場合は、「処方がなかった」品目を表示する
+			if !hasPrescription {
 				filteredResult = append(filteredResult, yjGroup)
 			}
 		} else {
+			// チェックされていない場合は、これまで通り「何らかの動きがあった」品目を表示する
 			if totalTransactions > 0 {
 				filteredResult = append(filteredResult, yjGroup)
 			}
@@ -1479,8 +1491,63 @@ func NextSequenceInTx(tx *sql.Tx, name, prefix string, padding int) (string, err
 }
 
 
+----- C:\Dev\KARASHI\db\stock.go -----
+// File: db/stock.go
+package db
+
+import (
+	"database/sql"
+	"fmt"
+	"strings"
+)
+
+// CalculateYjStockByDateは、指定日時点のYJコードごとの理論在庫を計算します。(YJ単位)
+func CalculateYjStockByDate(conn *sql.DB, date string, yjCodes []string) (map[string]float64, error) {
+	if len(yjCodes) == 0 {
+		return make(map[string]float64), nil
+	}
+
+	stockMap := make(map[string]float64)
+	for _, code := range yjCodes {
+		stockMap[code] = 0
+	}
+
+	q := `SELECT yj_code, flag, yj_quantity FROM transaction_records
+          WHERE transaction_date <= ? AND yj_code IN (?` + strings.Repeat(",?", len(yjCodes)-1) + `)`
+
+	args := []interface{}{date}
+	for _, code := range yjCodes {
+		args = append(args, code)
+	}
+
+	rows, err := conn.Query(q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query transactions for YJ stock calculation: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var yjCode string
+		var flag int
+		var quantity float64
+		if err := rows.Scan(&yjCode, &flag, &quantity); err != nil {
+			return nil, err
+		}
+
+		// flag 1:入庫, 2:出庫, 3:処方, 4:棚卸増, 5:棚卸減
+		switch flag {
+		case 1, 4: // 在庫を増やす
+			stockMap[yjCode] += quantity
+		case 2, 3, 5: // 在庫を減らす
+			stockMap[yjCode] -= quantity
+		}
+	}
+	return stockMap, nil
+}
+
+
 ----- C:\Dev\KARASHI\db\transaction_records.go -----
-// File: db/transaction_records.go (Corrected)
+// File: db/transaction_records.go
 package db
 
 import (
@@ -1490,7 +1557,6 @@ import (
 	"log"
 )
 
-// ★★★ EXPORTED by capitalizing the first letter ★★★
 const TransactionColumns = `
     id, transaction_date, client_code, receipt_number, line_number, flag,
     jan_code, yj_code, product_name, kana_name, package_form, package_spec, maker_name,
@@ -1500,7 +1566,6 @@ const TransactionColumns = `
     flag_deleterious, flag_narcotic, flag_psychotropic, flag_stimulant,
     flag_stimulant_raw, process_flag_ma, processing_status`
 
-// ★★★ EXPORTED by capitalizing the first letter ★★★
 func ScanTransactionRecord(row interface{ Scan(...interface{}) error }) (*model.TransactionRecord, error) {
 	var r model.TransactionRecord
 	if err := row.Scan(
@@ -1517,22 +1582,6 @@ func ScanTransactionRecord(row interface{ Scan(...interface{}) error }) (*model.
 	return &r, nil
 }
 
-// PersistTransactionRecords starts a new transaction to save records.
-func PersistTransactionRecords(conn *sql.DB, records []model.TransactionRecord) error {
-	tx, err := conn.Begin()
-	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %w", err)
-	}
-	defer tx.Rollback()
-
-	if err := PersistTransactionRecordsInTx(tx, records); err != nil {
-		return err
-	}
-
-	return tx.Commit()
-}
-
-// PersistTransactionRecordsInTx saves records within an existing transaction.
 func PersistTransactionRecordsInTx(tx *sql.Tx, records []model.TransactionRecord) error {
 	const q = `
 INSERT OR REPLACE INTO transaction_records (
@@ -1571,9 +1620,15 @@ INSERT OR REPLACE INTO transaction_records (
 	return nil
 }
 
-// GetReceiptNumbersByDate returns a list of receipt numbers for a given date.
+// ★★★ 修正点: クエリに `AND (flag = 11 OR flag = 12)` を追加 ★★★
 func GetReceiptNumbersByDate(conn *sql.DB, date string) ([]string, error) {
-	rows, err := conn.Query("SELECT DISTINCT receipt_number FROM transaction_records WHERE transaction_date = ? ORDER BY receipt_number", date)
+	const q = `
+		SELECT DISTINCT receipt_number 
+		FROM transaction_records 
+		WHERE transaction_date = ? AND (flag = 11 OR flag = 12) 
+		ORDER BY receipt_number`
+
+	rows, err := conn.Query(q, date)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get receipt numbers by date: %w", err)
 	}
@@ -1590,7 +1645,6 @@ func GetReceiptNumbersByDate(conn *sql.DB, date string) ([]string, error) {
 	return numbers, nil
 }
 
-// GetTransactionsByReceiptNumber returns all details for a given receipt number.
 func GetTransactionsByReceiptNumber(conn *sql.DB, receiptNumber string) ([]model.TransactionRecord, error) {
 	q := `SELECT ` + TransactionColumns + ` FROM transaction_records WHERE receipt_number = ? ORDER BY line_number`
 
@@ -1611,24 +1665,64 @@ func GetTransactionsByReceiptNumber(conn *sql.DB, receiptNumber string) ([]model
 	return records, nil
 }
 
-// DeleteTransactionsByReceiptNumberInTx deletes all records for a given receipt number within a transaction.
 func DeleteTransactionsByReceiptNumberInTx(tx *sql.Tx, receiptNumber string) error {
 	const q = `DELETE FROM transaction_records WHERE receipt_number = ?`
-
 	result, err := tx.Exec(q, receiptNumber)
 	if err != nil {
 		return fmt.Errorf("failed to delete transactions for receipt %s: %w", receiptNumber, err)
 	}
-
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
 		return fmt.Errorf("failed to get rows affected for receipt %s: %w", receiptNumber, err)
 	}
-
 	if rowsAffected == 0 {
 		return fmt.Errorf("no transaction found with receipt number: %s", receiptNumber)
 	}
+	return nil
+}
 
+func GetProvisionalTransactions(conn *sql.DB) ([]model.TransactionRecord, error) {
+	q := `SELECT ` + TransactionColumns + ` FROM transaction_records WHERE processing_status = 'provisional'`
+	rows, err := conn.Query(q)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get provisional transactions: %w", err)
+	}
+	defer rows.Close()
+
+	var records []model.TransactionRecord
+	for rows.Next() {
+		r, err := ScanTransactionRecord(rows)
+		if err != nil {
+			return nil, err
+		}
+		records = append(records, *r)
+	}
+	return records, nil
+}
+
+func UpdateFullTransactionInTx(tx *sql.Tx, record *model.TransactionRecord) error {
+	const q = `
+		UPDATE transaction_records SET
+			yj_code = ?, product_name = ?, kana_name = ?, package_form = ?, package_spec = ?, maker_name = ?,
+			jan_pack_inner_qty = ?, jan_pack_unit_qty = ?, jan_unit_name = ?, jan_unit_code = ?,
+			yj_pack_unit_qty = ?, yj_unit_name = ?,
+			flag_poison = ?, flag_deleterious = ?, flag_narcotic = ?, flag_psychotropic = ?,
+			flag_stimulant = ?, flag_stimulant_raw = ?,
+			process_flag_ma = ?, processing_status = ?
+		WHERE id = ?`
+
+	_, err := tx.Exec(q,
+		record.YjCode, record.ProductName, record.KanaName, record.PackageForm, record.PackageSpec, record.MakerName,
+		record.JanPackInnerQty, record.JanPackUnitQty, record.JanUnitName, record.JanUnitCode,
+		record.YjPackUnitQty, record.YjUnitName,
+		record.FlagPoison, record.FlagDeleterious, record.FlagNarcotic, record.FlagPsychotropic,
+		record.FlagStimulant, record.FlagStimulantRaw,
+		record.ProcessFlagMA, record.ProcessingStatus,
+		record.ID,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to update transaction ID %d: %w", record.ID, err)
+	}
 	return nil
 }
 
@@ -1654,7 +1748,7 @@ func DeleteUsageTransactionsInDateRange(tx *sql.Tx, minDate, maxDate string) err
 
 
 ----- C:\Dev\KARASHI\inout\handler.go -----
-// File: inout/handler.go (修正版)
+// File: inout/handler.go
 package inout
 
 import (
@@ -1753,7 +1847,8 @@ func SaveInOutHandler(conn *sql.DB) http.HandlerFunc {
 		}
 
 		// --- レコード保存 ---
-		flagMap := map[string]int{"入庫": 1, "出庫": 2}
+		// ★★★ 修正点: フラグの値を変更 (入庫: 11, 出庫: 12) ★★★
+		flagMap := map[string]int{"入庫": 11, "出庫": 12}
 		flag := flagMap[payload.TransactionType]
 
 		for i := range payload.Records {
@@ -1776,7 +1871,7 @@ func SaveInOutHandler(conn *sql.DB) http.HandlerFunc {
 						ProductCode:      rec.JanCode,
 						YjCode:           rec.YjCode,
 						ProductName:      rec.ProductName,
-						Origin:           "JCSHMS", // ★★★ ここを "MANUAL_ENTRY" から "JCSHMS" に修正 ★★★
+						Origin:           "JCSHMS",
 						KanaName:         rec.KanaName,
 						MakerName:        rec.MakerName,
 						PackageSpec:      rec.PackageForm,
@@ -1817,6 +1912,243 @@ func SaveInOutHandler(conn *sql.DB) http.HandlerFunc {
 			"receiptNumber": receiptNumber,
 		})
 	}
+}
+
+
+----- C:\Dev\KARASHI\inventory\handler.go -----
+// File: inventory/handler.go
+package inventory
+
+import (
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"karashi/db"
+	"karashi/model"
+	"karashi/units"
+	"log"
+	"net/http"
+)
+
+const (
+	FlagInvAdjIn  = 4
+	FlagInvAdjOut = 5
+)
+
+// UploadInventoryHandlerは棚卸ファイルを受け取り、YJ単位で在庫調整を行います
+func UploadInventoryHandler(conn *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		file, _, err := r.FormFile("file")
+		if err != nil {
+			http.Error(w, "File upload error", http.StatusBadRequest)
+			return
+		}
+		defer file.Close()
+
+		parsedData, err := ParseInventoryFile(file)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Failed to parse file: %v", err), http.StatusBadRequest)
+			return
+		}
+		date := parsedData.Date
+		if date == "" {
+			http.Error(w, "Inventory date not found in file's H record", http.StatusBadRequest)
+			return
+		}
+
+		tx, err := conn.Begin()
+		if err != nil {
+			http.Error(w, "Failed to start transaction", http.StatusInternalServerError)
+			return
+		}
+		defer tx.Rollback()
+
+		// --- 1. ファイルから読み取った物理在庫をYJコード単位で集計 ---
+		physicalYjStockMap := make(map[string]float64)
+		uniqueYjCodes := make(map[string]struct{})
+		fileDataByJan := make(map[string]FileRow)
+
+		for _, row := range parsedData.Rows {
+			master, _ := db.GetProductMasterByCode(conn, row.JanCode)
+
+			var yjQty float64
+			if master != nil { // 既存マスターがある場合
+				yjQty = row.PhysicalJanQty * master.YjPackUnitQty
+			} else { // 新規の場合
+				yjQty = row.PhysicalJanQty * row.InnerPackQty
+
+				// 新規マスターを作成
+				newMasterInput := model.ProductMasterInput{
+					ProductCode:     row.JanCode,
+					YjCode:          row.YjCode,
+					ProductName:     row.ProductName,
+					Origin:          "PROVISIONAL_INV", // 棚卸由来の暫定マスター
+					YjUnitName:      units.ResolveCode(row.YjUnitName),
+					YjPackUnitQty:   row.InnerPackQty, // YJ包装数量 = 内包装数量と仮定
+					JanPackInnerQty: row.InnerPackQty,
+				}
+				if err := db.CreateProductMasterInTx(tx, newMasterInput); err != nil {
+					log.Printf("Failed to create provisional master from inventory for JAN %s: %v", row.JanCode, err)
+					http.Error(w, "Failed to create new master", http.StatusInternalServerError)
+					return
+				}
+			}
+			physicalYjStockMap[row.YjCode] += yjQty
+			uniqueYjCodes[row.YjCode] = struct{}{}
+			fileDataByJan[row.JanCode] = row
+		}
+
+		var yjCodeList []string
+		for yj := range uniqueYjCodes {
+			yjCodeList = append(yjCodeList, yj)
+		}
+
+		// --- 2. DBから現在の理論在庫をYJコード単位で取得 ---
+		systemYjStockMap, err := db.CalculateYjStockByDate(conn, date, yjCodeList)
+		if err != nil {
+			http.Error(w, "Failed to calculate system stock", http.StatusInternalServerError)
+			return
+		}
+
+		// --- 3. 差分を計算し、調整トランザクションを生成 ---
+		var adjustments []model.TransactionRecord
+		receiptNumber := fmt.Sprintf("INV%s", date)
+		lineNumber := 1
+
+		for yjCode, physicalCount := range physicalYjStockMap {
+			systemCount := systemYjStockMap[yjCode]
+			variance := physicalCount - systemCount
+
+			if variance == 0 {
+				continue
+			}
+
+			// 代表のJANコードを検索して基本情報を設定
+			var representativeJan string
+			for jan, data := range fileDataByJan {
+				if data.YjCode == yjCode {
+					representativeJan = jan
+					break
+				}
+			}
+
+			adj := model.TransactionRecord{
+				TransactionDate:  date,
+				ReceiptNumber:    receiptNumber,
+				LineNumber:       fmt.Sprintf("%d", lineNumber),
+				YjCode:           yjCode,
+				JanCode:          representativeJan,
+				UnitPrice:        0,
+				Subtotal:         0,
+				ProcessingStatus: sql.NullString{String: "provisional", Valid: true},
+			}
+
+			if variance > 0 {
+				adj.Flag = FlagInvAdjIn
+				adj.YjQuantity = variance
+			} else {
+				adj.Flag = FlagInvAdjOut
+				adj.YjQuantity = -variance
+			}
+			adjustments = append(adjustments, adj)
+			lineNumber++
+		}
+
+		// --- 4. データベースに保存 ---
+		if len(adjustments) > 0 {
+			if err := db.PersistTransactionRecordsInTx(tx, adjustments); err != nil {
+				http.Error(w, "Failed to save adjustments", http.StatusInternalServerError)
+				return
+			}
+		}
+
+		if err := tx.Commit(); err != nil {
+			http.Error(w, "Failed to commit transaction", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"message": fmt.Sprintf("%d件のYJコードについて在庫調整を登録しました。", len(adjustments)),
+			"details": adjustments,
+		})
+	}
+}
+
+
+----- C:\Dev\KARASHI\inventory\parser.go -----
+// File: inventory/parser.go
+package inventory
+
+import (
+	"encoding/csv"
+	"fmt"
+	"io"
+	"strconv"
+	"strings"
+
+	"golang.org/x/text/encoding/japanese"
+	"golang.org/x/text/transform"
+)
+
+// FileRowはファイルから読み込んだ行の構造体です
+type FileRow struct {
+	ProductName    string
+	YjUnitName     string
+	InnerPackQty   float64
+	PhysicalJanQty float64
+	YjCode         string
+	JanCode        string
+}
+
+// ParsedInventoryFileはファイル全体の構造体です
+type ParsedInventoryFile struct {
+	Date string
+	Rows []FileRow
+}
+
+// ParseInventoryFileは新しい形式の棚卸ファイルを解析します
+func ParseInventoryFile(r io.Reader) (*ParsedInventoryFile, error) {
+	reader := csv.NewReader(transform.NewReader(r, japanese.ShiftJIS.NewDecoder()))
+	reader.FieldsPerRecord = -1 // 可変長カラムに対応
+
+	var result ParsedInventoryFile
+	var dataRows []FileRow
+
+	records, err := reader.ReadAll()
+	if err != nil {
+		return nil, fmt.Errorf("csv read all error: %w", err)
+	}
+
+	for _, row := range records {
+		if len(row) == 0 {
+			continue
+		}
+
+		rowType := strings.TrimSpace(row[0])
+		switch rowType {
+		case "H":
+			if len(row) > 4 {
+				result.Date = strings.TrimSpace(row[4])
+			}
+		case "R1":
+			if len(row) > 45 {
+				innerPackQty, _ := strconv.ParseFloat(strings.TrimSpace(row[17]), 64)
+				physicalJanQty, _ := strconv.ParseFloat(strings.TrimSpace(row[21]), 64)
+
+				dataRows = append(dataRows, FileRow{
+					ProductName:    strings.TrimSpace(row[12]),
+					YjUnitName:     strings.TrimSpace(row[16]),
+					InnerPackQty:   innerPackQty,
+					PhysicalJanQty: physicalJanQty,
+					YjCode:         strings.TrimSpace(row[42]),
+					JanCode:        strings.TrimSpace(row[45]),
+				})
+			}
+		}
+	}
+	result.Rows = dataRows
+	return &result, nil
 }
 
 
@@ -2392,24 +2724,50 @@ th {
 .hidden { display: none !important; }
 
 /* --- ページ構成 --- */
+/* ★★★ 修正点: ヘッダーをスティッキー(固定)に ★★★ */
 header {
     display: flex;
+    flex-wrap: wrap; /* ボタンが多いため折り返しを許可 */
     align-items: center;
     gap: 10px;
-    padding-bottom: 10px;
+    padding: 10px;
     border-bottom: 1px solid #000000;
     margin-bottom: 10px;
+    background-color: #ffffff; /* スクロール時に下が透けないように */
+    position: sticky;
+    top: 0;
+    z-index: 1000; /* 他の要素より手前に表示 */
 }
+
+/* ★★★ 修正点: ボタンのスタイルを調整 ★★★ */
 .btn {
     font-size: 14px;
     padding: 8px 16px;
-    background-color: #ffffff;
+    background-color: #f0f0f0; /* 通常時の色を少しグレーに */
     border: 1px solid #000000;
-    cursor: pointer;
+    cursor: default; /* カーソルを通常の矢印に */
+    transition: background-color 0.2s; /* 色が滑らかに変わるように */
 }
 .btn:hover {
-    background-color: #f0f0f0;
+    background-color: #dcdcdc; /* マウスオーバー時の色 */
 }
+.btn:active {
+    background-color: #cccccc; /* クリック時の色 */
+}
+/* ★★★ 追加: 選択中のボタンのスタイル ★★★ */
+.btn.active {
+    background-color: #a9a9a9; /* 選択中の色 */
+    font-weight: bold;
+    color: #000;
+}
+/* ★★★ 追加: ローディング中のボタンスタイル ★★★ */
+.btn.loading {
+    background-color: #cccccc;
+    color: #666;
+    cursor: not-allowed;
+}
+
+
 .table-container {
     overflow-x: auto;
     margin-bottom: 20px;
@@ -2422,15 +2780,8 @@ header {
     justify-content: space-between;
     margin-bottom: 20px;
 }
-.in-out-header h1 {
-    font-size: 24px;
-}
 .section {
     margin-bottom: 20px;
-}
-.section h2 {
-    font-size: 18px;
-    margin-bottom: 10px;
 }
 .controller-table select, .controller-table input {
     width: 100%;
@@ -2451,6 +2802,7 @@ header {
     display: flex;
     align-items: center;
     justify-content: center;
+    z-index: 2000;
 }
 .modal-content {
     background-color: #ffffff;
@@ -2477,43 +2829,38 @@ header {
     font-size: 24px;
     border: none;
     background: none;
-    cursor: pointer;
+    cursor: default;
 }
 
-/* --- 集計結果の新しいスタイル (画面表示用) --- */
+/* --- 集計結果のスタイル --- */
 .aggregation-group-table {
     width: 100%;
     border-collapse: collapse;
-    margin-bottom: 20px; /* グループ間の余白 */
+    margin-bottom: 20px;
     border: 1px solid #ccc;
 }
-
 .aggregation-group-table > thead > tr > th {
     background-color: #f8f9fa;
     padding: 10px;
     text-align: left;
     border-bottom: 2px solid #ccc;
 }
-
 .aggregation-group-table .agg-header-line1 {
     font-weight: bold;
     font-size: 16px;
     color: #212529;
     margin-bottom: 5px;
 }
-
 .aggregation-group-table .agg-header-line2 {
     font-size: 14px;
     color: #495057;
     padding-left: 10px;
 }
-
 .aggregation-group-table .details-header th {
     background-color: #e9ecef;
     font-weight: bold;
     text-align: center;
 }
-
 .aggregation-group-table td, 
 .aggregation-group-table th {
     border: 1px solid #ccc;
@@ -2521,26 +2868,125 @@ header {
     vertical-align: middle;
 }
 
+/* ★★★ 修正点: 集計フィルターのレイアウトをFlexboxで整列 ★★★ */
+.filter-container {
+    border: 1px solid #ccc;
+    padding: 15px;
+    margin-bottom: 20px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 20px;
+    align-items: flex-end; /* 要素の下端を揃える */
+}
+.filter-group {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+}
+.filter-group-checkbox {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px 15px;
+    align-items: center;
+    border: 1px solid #eee;
+    padding: 5px 10px;
+}
+.no-movement-label {
+    border-left: 2px solid #999;
+    padding-left: 15px;
+}
+.filter-group-buttons {
+    margin-left: auto; /* ボタンを右端に寄せる */
+}
 
-/* File: static/css/styles.css (@media print ブロックの全体) */
+
+/* ★★★ 追加: ローディング表示のスタイル ★★★ */
+#loading-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(255, 255, 255, 0.8);
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    z-index: 9999;
+}
+.spinner {
+    border: 8px solid #f3f3f3;
+    border-top: 8px solid #3498db;
+    border-radius: 50%;
+    width: 60px;
+    height: 60px;
+    animation: spin 1s linear infinite;
+    margin-bottom: 20px;
+}
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+/* ★★★ 追加: 通知ボックスのスタイル ★★★ */
+#notification-box {
+    position: fixed;
+    top: 80px; /* ヘッダーの下に表示 */
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 15px 25px;
+    border-radius: 5px;
+    color: white;
+    font-size: 16px;
+    z-index: 10000;
+    opacity: 0;
+    transition: opacity 0.5s, top 0.5s;
+}
+#notification-box.show {
+    opacity: 1;
+    top: 90px;
+}
+#notification-box.success {
+    background-color: #28a745;
+}
+#notification-box.error {
+    background-color: #dc3545;
+}
+
+/* ★★★ 追加: トップへ戻るボタンのスタイル ★★★ */
+#back-to-top {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    width: 50px;
+    height: 50px;
+    background-color: #555;
+    color: white;
+    border: none;
+    border-radius: 50%;
+    text-align: center;
+    font-size: 24px;
+    line-height: 50px;
+    cursor: default;
+    z-index: 1000;
+}
+#back-to-top:hover {
+    background-color: #333;
+}
+
 
 /* --- 印刷専用スタイル --- */
 @media print {
-    /* 用紙設定 (A4縦、余白を縮小) */
     @page {
         size: A4 portrait;
-        margin: 10mm;
+        margin: 5mm;
     }
-
-    /* 印刷したくない要素をすべて非表示に */
     body > header,
     body > main > div:not(#aggregation-view),
-    #aggregation-view .in-out-header,
-    #aggregation-view .filter-container {
+    #aggregation-view .filter-container,
+    .btn {
         display: none !important;
     }
-
-    /* 印刷コンテナを画面全体に広げる */
     body, main, #aggregation-view, #aggregation-output-container {
         display: block !important;
         width: 100% !important;
@@ -2549,50 +2995,48 @@ header {
         border: none !important;
         box-shadow: none !important;
         background: none !important;
+        color: #000 !important;
     }
-    
-    /* 繰り返しヘッダーの指定 */
     .aggregation-group-table thead.repeating-header {
         display: table-header-group;
     }
-
-    /* グループ全体のテーブルスタイル (グループ間の余白を縮小) */
     .aggregation-group-table {
         page-break-inside: avoid;
-        margin-bottom: 3mm;
+        margin-bottom: 1mm;
         width: 100%;
         border-collapse: collapse;
     }
-    
-    /* 繰り返しヘッダーのスタイル (余白を縮小) */
     .repeating-header th {
         border: none;
-        padding: 0 0 2px 0;
+        padding: 0 0 1px 0;
         text-align: left;
-        border-bottom: 2px solid #000;
+        border-bottom: 1px solid #000;
     }
-
-    /* ヘッダー内の文字の行間を縮小 */
-    .agg-header-line1, .agg-header-line2 {
-        line-height: 1.2;
+    .agg-header-line1 {
+        font-size: 8pt;
+        font-weight: bold;
+        line-height: 1.1;
     }
-
-    /* 明細行のセルスタイル (余白と行間を縮小) */
+    .agg-header-line2 {
+        font-size: 7pt;
+        line-height: 1.1;
+        padding-left: 0;
+    }
     .aggregation-group-table td,
     .aggregation-group-table .details-header th {
-        font-size: 9pt;
-        border: 1px solid #666;
-        padding: 2px 3px;
-        line-height: 1.15;
+        font-size: 7pt;
+        border: 1px solid #888;
+        padding: 1px 2px;
+        line-height: 1.1;
+        white-space: nowrap;
     }
-    
-    /* 背景色を強制的に印刷 (警告が出ていた箇所の修正版) */
     .details-header th {
-        background-color: #e9ecef !important;
+        background-color: #f0f0f0 !important;
         -webkit-print-color-adjust: exact;
         print-color-adjust: exact;
     }
 }
+
 
 ----- C:\Dev\KARASHI\static\css\table_layout.css -----
 /* File: static/css/table_layout.css */
@@ -2601,30 +3045,33 @@ header {
 .data-table {
     border-collapse: collapse;
     width: 100%;
-    min-width: 1235px; /* Googleスプレッドシートのピクセル幅合計 */
+    min-width: 1235px;
     table-layout: fixed;
-    border: 1px solid #ccc; /* 枠線の色を少し柔らかくします */
+    border: 1px solid #ccc;
 }
 .data-table th,
 .data-table td {
-    border: 1px solid #ccc; /* 枠線の色を少し柔らかくします */
+    border: 1px solid #ccc;
     background-color: #ffffff;
     text-align: left;
     font-family: 'docs-sans-serif', Arial;
     font-size: 11pt;
-    vertical-align: middle; /* topから変更 */
-    padding: 2px; /* パディングを少し狭くする */
+    vertical-align: middle;
+    padding: 2px;
     white-space: normal;
     word-break: break-all;
 }
-.data-table thead td {
-    background-color: #f0f0f0; /* ★背景色を薄いグレーに変更 */
+.data-table thead td,
+.data-table thead th {
+    background-color: #f0f0f0;
     text-align: center;
     font-weight: bold;
-    color: #000000; /* ★文字色を黒に変更 */
-    padding: 4px 6px; /* パディングを調整 */
+    color: #000000;
+    padding: 4px 6px;
     white-space: nowrap;
 }
+
+/* ★★★ 修正点: テーブルヘッダーのスティッキー設定を完全に削除 ★★★ */
 
 
 .data-table td input[type="text"],
@@ -2638,14 +3085,19 @@ header {
     background-color: #fff;
 }
 
+.data-table td input.highlight-search {
+    background-color: #fffacd; /* 薄い黄色 */
+}
+
+
 .data-table td button {
     padding: 4px 8px;
     background-color: #f0f0f0;
     border: 1px solid #000;
-    cursor: pointer;
+    cursor: default;
     font-size: 10pt;
-    width: 100%; /* ボタンも幅100%に設定 */
-    box-sizing: border-box; /* パディングとボーダーを幅に含める */
+    width: 100%;
+    box-sizing: border-box;
 }
 
 .data-table td.center { text-align: center; }
@@ -2659,22 +3111,51 @@ header {
     background-color: #f9f9f9;
 }
 
+
 ----- C:\Dev\KARASHI\static\js\aggregation.js -----
-// File: static/js/aggregation.js (修正後の全体)
-import { createUploadTableHTML } from './common_table.js';
+// File: static/js/aggregation.js
+import { transactionTypeMap } from './common_table.js';
 
 const view = document.getElementById('aggregation-view');
 const runBtn = document.getElementById('run-aggregation-btn');
-const printBtn = document.getElementById('print-aggregation-btn'); // 印刷ボタンを取得
+const printBtn = document.getElementById('print-aggregation-btn');
 const outputContainer = document.getElementById('aggregation-output-container');
+
+// ★★★ 追加: 集計テーブルの列幅を定義 ★★★
+const colWidths = [
+    "5.83%", "4.5%", "9.15%", "13.77%", "13.77%",
+    "2.91%", "5.34%", "7.69%", "5.34%", "7.21%",
+    "5.91%", "7.21%", "7.21%", "5.75%"
+];
+const colgroup = `<colgroup>${
+    colWidths.map(w => `<col style="width:${w};">`).join("")
+}</colgroup>`;
+
+function createAggregationTableHTML(tableId) {
+  const header = `
+    <thead>
+      <tr>
+        <th rowspan="2">日付</th><th rowspan="2">種別</th><th>YJ</th><th colspan="2">製品名</th>
+        <th rowspan="2">個数</th><th>JAN数量</th><th>JAN包装数</th><th>JAN単位</th>
+        <th>単価</th><th>税額</th><th>期限</th><th>ロット</th><th>MA</th>
+      </tr>
+      <tr>
+        <th>JAN</th><th>包装</th><th>メーカー</th><th>YJ数量</th>
+        <th>YJ包装数</th><th>YJ単位</th><th>金額</th><th>税率</th>
+        <th>得意先</th><th>伝票番号</th><th>行</th>
+      </tr>
+    </thead>
+  `;
+  return `<table id="${tableId}" class="data-table">${colgroup}${header}<tbody>
+    <tr><td colspan="14">フィルター条件を指定して「集計実行」を押してください。</td></tr>
+  </tbody></table>`;
+}
 
 export function resetAggregationView() {
     if(outputContainer) {
-        outputContainer.innerHTML = createUploadTableHTML('aggregation-table');
+        outputContainer.innerHTML = createAggregationTableHTML('aggregation-table');
     }
 }
-
-const flagMap = {1: "入", 2: "出", 3: "処"};
 
 const startDateInput = document.getElementById('startDate');
 const endDateInput = document.getElementById('endDate');
@@ -2684,9 +3165,6 @@ const noMovementCheckbox = document.getElementById('no-movement-filter');
 
 const safeToFixed = (num, digits = 2) => (typeof num === 'number' ? num.toFixed(digits) : (0).toFixed(digits));
 
-/**
- * 集計結果をテーブルに描画する
- */
 function renderResults(data) {
     if (!data || data.length === 0) {
         outputContainer.innerHTML = "<p>対象データが見つかりませんでした。</p>";
@@ -2696,10 +3174,8 @@ function renderResults(data) {
     let html = '';
     data.forEach(yg => {
         yg.packageGroups.forEach(pg => {
-            // 印刷時のヘッダー繰り返しの為、グループごとにテーブルを作成
-            html += '<table class="aggregation-group-table">';
+            html += `<table class="aggregation-group-table">${colgroup}`; // ★★★ 修正: colgroupを追加
 
-            // 繰り返し表示させたいヘッダー (thead)
             const line1Parts = [
                 `${yg.yjCode} ${yg.productName}`,
                 `YJ数量 合計: ${safeToFixed(yg.totalYjQty)}`,
@@ -2724,10 +3200,8 @@ function renderResults(data) {
                 </thead>
             `;
 
-            // 明細部分 (tbody)
             html += '<tbody>';
             if (pg.transactions && pg.transactions.length > 0) {
-                // 明細のヘッダー行
                 html += `
                     <tr class="details-header">
                         <th rowspan="2">日付</th><th rowspan="2">種別</th><th>YJ</th><th colspan="2">製品名</th>
@@ -2740,21 +3214,20 @@ function renderResults(data) {
                         <th>得意先</th><th>伝票番号</th><th>行</th>
                     </tr>
                 `;
-                // 明細データ
                 pg.transactions.forEach(t => {
                     html += `
                         <tr>
-                            <td rowspan="2">${t.transactionDate}</td><td rowspan="2">${flagMap[t.flag] || ''}</td><td>${t.yjCode}</td>
-                            <td colspan="2">${t.productName}</td><td rowspan="2">${t.datQuantity}</td>
-                            <td>${safeToFixed(t.janQuantity)}</td><td>${t.janPackUnitQty}</td><td>${t.janUnitName}</td>
-                            <td>${safeToFixed(t.unitPrice)}</td><td>${t.taxAmount}</td><td>${t.expiryDate}</td>
+                            <td rowspan="2">${t.transactionDate}</td><td rowspan="2">${transactionTypeMap[t.flag] || ''}</td><td>${t.yjCode}</td>
+                            <td colspan="2" class="left">${t.productName}</td><td rowspan="2" class="right">${t.datQuantity}</td>
+                            <td class="right">${safeToFixed(t.janQuantity)}</td><td class="right">${t.janPackUnitQty}</td><td>${t.janUnitName}</td>
+                            <td class="right">${safeToFixed(t.unitPrice)}</td><td class="right">${t.taxAmount}</td><td>${t.expiryDate}</td>
                             <td>${t.lotNumber}</td><td>${t.processFlagMA}</td>
                         </tr>
                         <tr>
-                            <td>${t.janCode}</td><td>${t.packageSpec}</td><td>${t.makerName}</td>
-                            <td>${safeToFixed(t.yjQuantity)}</td><td>${t.yjPackUnitQty}</td><td>${t.yjUnitName}</td>
-                            <td>${t.subtotal}</td><td>${t.taxRate != null ? (t.taxRate * 100).toFixed(0) + "%" : ""}</td>
-                            <td>${t.clientCode}</td><td>${t.receiptNumber}</td><td>${t.lineNumber}</td>
+                            <td>${t.janCode}</td><td class="left">${t.packageSpec}</td><td class="left">${t.makerName}</td>
+                            <td class="right">${safeToFixed(t.yjQuantity)}</td><td class="right">${t.yjPackUnitQty}</td><td>${t.yjUnitName}</td>
+                            <td class="right">${t.subtotal}</td><td class="right">${t.taxRate != null ? (t.taxRate * 100).toFixed(0) + "%" : ""}</td>
+                            <td class="left">${t.clientCode}</td><td class="left">${t.receiptNumber}</td><td class="right">${t.lineNumber}</td>
                         </tr>
                     `;
                 });
@@ -2767,9 +3240,6 @@ function renderResults(data) {
     outputContainer.innerHTML = html;
 }
 
-/**
- * 集計ビューを初期化
- */
 export function initAggregation() {
     if (!view) return;
     
@@ -2781,7 +3251,6 @@ export function initAggregation() {
 
     resetAggregationView();
 
-    // 印刷ボタンのクリックイベント
     if(printBtn) {
         printBtn.addEventListener('click', () => {
             window.print();
@@ -2789,40 +3258,40 @@ export function initAggregation() {
     }
 
     runBtn.addEventListener('click', async () => {
-        outputContainer.innerHTML = "集計中...";
+        window.showLoading(); // ローディング開始
         
         const params = new URLSearchParams();
         params.append('startDate', startDateInput.value.replace(/-/g, ''));
         params.append('endDate', endDateInput.value.replace(/-/g, ''));
-
         if (kanaNameInput.value) {
             params.append('kanaName', kanaNameInput.value);
         }
-
         const selectedTypes = Array.from(drugTypeCheckboxes)
             .filter(cb => cb.checked)
             .map(cb => cb.value);
         if (selectedTypes.length > 0) {
             params.append('drugTypes', selectedTypes.join(','));
         }
-
         if (noMovementCheckbox.checked) {
             params.append('noMovement', 'true');
         }
 
         try {
-             const res = await fetch(`/api/aggregation?${params.toString()}`);
+            const res = await fetch(`/api/aggregation?${params.toString()}`);
             if (!res.ok) throw new Error('集計に失敗しました');
             const data = await res.json();
             renderResults(data);
         } catch (err) {
             outputContainer.innerHTML = `<p style="color:red;">${err.message}</p>`;
+        } finally {
+            window.hideLoading(); // ローディング終了
         }
     });
 }
 
+
 ----- C:\Dev\KARASHI\static\js\app.js -----
-// File: static/js/app.js (最終修正版)
+// File: static/js/app.js
 import { initDatUpload, resetDatUploadView } from './dat.js';
 import { initUsageUpload, resetUsageUploadView } from './usage.js';
 import { initInOut, resetInOutView } from './inout.js';
@@ -2830,68 +3299,166 @@ import { initBackupButtons } from './backup.js';
 import { initMasterEdit, resetMasterEditView } from './master_edit.js';
 import { initAggregation, resetAggregationView } from './aggregation.js';
 import { initUpdateMaster } from './update_master.js';
+import { initReprocessButton } from './reprocess.js';
+
+// --- グローバルUI要素の管理 ---
+const loadingOverlay = document.getElementById('loading-overlay');
+const notificationBox = document.getElementById('notification-box');
+const backToTopBtn = document.getElementById('back-to-top');
+
+window.showLoading = () => loadingOverlay.classList.remove('hidden');
+window.hideLoading = () => loadingOverlay.classList.add('hidden');
+
+window.showNotification = (message, type = 'success') => {
+    notificationBox.textContent = message;
+    notificationBox.className = 'hidden';
+    void notificationBox.offsetWidth;
+    notificationBox.className = '';
+    notificationBox.classList.add(type, 'show');
+    setTimeout(() => {
+        notificationBox.classList.remove('show');
+    }, 3000);
+};
+
 
 document.addEventListener('DOMContentLoaded', () => {
-  // 各モジュールの初期化
-  initDatUpload();
-  initUsageUpload();
-  initInOut();
+  // --- 初期化フラグ ---
+  let isDatInitialized = false;
+  let isUsageInitialized = false;
+  let isInOutInitialized = false;
+  let isMasterEditInitialized = false;
+  let isAggregationInitialized = false;
+  
+  // --- 状態管理 ---
+  let lastClickedButtonId = null;
+
+  // --- ビューを持たないボタンの初期化 ---
   initBackupButtons();
-  initMasterEdit();
-  initAggregation();
   initUpdateMaster();
+  initReprocessButton();
 
-  // --- ビュー切り替えロジック ---
-  const uploadView = document.getElementById('upload-view');
-  const inOutView = document.getElementById('in-out-view');
-  const masterEditView = document.getElementById('master-edit-view');
-  const aggregationView = document.getElementById('aggregation-view');
+  // --- DOM要素 ---
+  const mainHeader = document.getElementById('main-header');
+  const menuButtons = mainHeader.querySelectorAll('.btn');
+  const allViews = document.querySelectorAll('main > div[id$="-view"]');
+  const viewMap = {
+      'inOutViewBtn': 'in-out-view',
+      'masterEditViewBtn': 'master-edit-view',
+      'datBtn': 'upload-view',
+      'usageBtn': 'upload-view',
+      'aggregationBtn': 'aggregation-view',
+  };
 
-  const allViews = [uploadView, inOutView, masterEditView, aggregationView];
+  /**
+   * 指定されたボタンIDに基づいてビューを切り替える関数
+   * @param {string} buttonId 押されたボタンのID
+   */
+  function switchView(buttonId) {
+    const targetViewId = viewMap[buttonId];
+    if (!targetViewId) return;
 
-  function showView(viewToShow) {
-    allViews.forEach(v => v.classList.add('hidden'));
-    viewToShow.classList.remove('hidden');
+    // 1. ボタンのアクティブ状態を更新 (最後に押されたボタンのみ)
+    menuButtons.forEach(btn => {
+        if (viewMap[btn.id]) {
+            btn.classList.toggle('active', btn.id === buttonId);
+        }
+    });
+
+    // 2. ビューの表示/非表示を切り替え
+    allViews.forEach(v => {
+        v.classList.toggle('hidden', v.id !== targetViewId);
+    });
+    
+    // 3. 各ビューの初期化/リセット処理
+    switch (targetViewId) {
+        case 'in-out-view':
+            if (!isInOutInitialized) { initInOut(); isInOutInitialized = true; } 
+            else { resetInOutView(); }
+            break;
+        case 'master-edit-view':
+            if (!isMasterEditInitialized) { initMasterEdit(); isMasterEditInitialized = true; }
+            else { resetMasterEditView(); }
+            break;
+        case 'aggregation-view':
+            if (!isAggregationInitialized) { initAggregation(); isAggregationInitialized = true; }
+            else { resetAggregationView(); }
+            break;
+        case 'upload-view':
+            if (buttonId === 'datBtn') {
+                if (!isDatInitialized) { initDatUpload(); isDatInitialized = true; }
+                resetDatUploadView();
+                document.getElementById('datFileInput').click();
+            } else if (buttonId === 'usageBtn') {
+                if (!isUsageInitialized) { initUsageUpload(); isUsageInitialized = true; }
+                resetUsageUploadView();
+                document.getElementById('usageFileInput').click();
+            }
+            break;
+    }
   }
-
-  // ▼▼▼ 修正点: 各ボタンのイベントリスナーを修正 ▼▼▼
-  document.getElementById('inOutViewBtn').addEventListener('click', () => {
-    resetInOutView();
-    showView(inOutView);
+  
+  // --- イベントリスナー ---
+  mainHeader.addEventListener('click', (e) => {
+    if (e.target.matches('.btn') && viewMap[e.target.id]) {
+        lastClickedButtonId = e.target.id;
+        switchView(lastClickedButtonId);
+    }
   });
 
-  document.getElementById('masterEditViewBtn').addEventListener('click', () => {
-    resetMasterEditView();
-    showView(masterEditView);
+  window.addEventListener('scroll', () => {
+    if (window.pageYOffset > 300) {
+        backToTopBtn.classList.remove('hidden');
+    } else {
+        backToTopBtn.classList.add('hidden');
+    }
+  });
+
+  backToTopBtn.addEventListener('click', () => {
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   });
   
-  document.getElementById('aggregationBtn').addEventListener('click', () => {
-    resetAggregationView();
-    showView(aggregationView);
-  });
-  
-  document.getElementById('datBtn').addEventListener('click', () => {
-    resetDatUploadView();
-    showView(uploadView);
-  });
-
-  document.getElementById('usageBtn').addEventListener('click', () => {
-    resetUsageUploadView();
-    showView(uploadView);
-  });
-
-  // ▼▼▼ 修正点: 初期表示の命令を削除 ▼▼▼
-  // showView(inOutView);
+  // --- 初期表示 ---
+  lastClickedButtonId = 'inOutViewBtn';
+  switchView(lastClickedButtonId);
 });
 
------ C:\Dev\KARASHI\static\js\backup.js -----
-// File: static/js/backup.js (Corrected)
 
-/**
- * Initializes the event listeners for the backup buttons.
- */
+----- C:\Dev\KARASHI\static\js\backup.js -----
+// File: static/js/backup.js
+
+async function handleFileUpload(event, url) {
+    const fileInput = event.target;
+    const file = fileInput.files[0];
+    if (!file) return;
+
+    const formData = new FormData();
+    formData.append('file', file);
+    
+    window.showLoading(); // ローディング開始
+
+    try {
+        const res = await fetch(url, {
+            method: 'POST',
+            body: formData,
+        });
+
+        const resData = await res.json();
+        if (!res.ok) {
+            throw new Error(resData.message || 'インポートに失敗しました。');
+        }
+        window.showNotification(resData.message, 'success'); // ★★★ 修正: alert -> showNotification
+        setTimeout(() => window.location.reload(), 1000); // 通知が見えるように少し待つ
+
+    } catch (err) {
+        console.error(err);
+        window.showNotification(`エラー: ${err.message}`, 'error'); // ★★★ 修正: alert -> showNotification
+    } finally {
+        window.hideLoading(); // ローディング終了
+        fileInput.value = '';
+    }
+}
+
 export function initBackupButtons() {
-    // Client buttons
     const exportClientsBtn = document.getElementById('exportClientsBtn');
     const importClientsBtn = document.getElementById('importClientsBtn');
     const importClientsInput = document.getElementById('importClientsInput');
@@ -2908,7 +3475,6 @@ export function initBackupButtons() {
         });
     }
 
-    // *** ADDED: Product buttons ***
     const exportProductsBtn = document.getElementById('exportProductsBtn');
     const importProductsBtn = document.getElementById('importProductsBtn');
     const importProductsInput = document.getElementById('importProductsInput');
@@ -2926,42 +3492,21 @@ export function initBackupButtons() {
     }
 }
 
-/**
- * Generic file upload handler.
- * @param {Event} event - The file input change event.
- * @param {string} url - The API endpoint to upload the file to.
- */
-async function handleFileUpload(event, url) {
-    const fileInput = event.target;
-    const file = fileInput.files[0];
-    if (!file) return;
-
-    const formData = new FormData();
-    formData.append('file', file);
-
-    try {
-        const res = await fetch(url, {
-            method: 'POST',
-            body: formData,
-        });
-
-        const resData = await res.json();
-        if (!res.ok) {
-            throw new Error(resData.message || 'インポートに失敗しました。');
-        }
-        alert(resData.message);
-        window.location.reload();
-
-    } catch (err) {
-        console.error(err);
-        alert(`エラー: ${err.message}`);
-    } finally {
-        fileInput.value = '';
-    }
-}
 
 ----- C:\Dev\KARASHI\static\js\common_table.js -----
-// File: static/js/common_table.js (修正版)
+// File: static/js/common_table.js
+
+// ★★★ 修正点: 全てのフラグに対応するマップを作成し、エクスポート ★★★
+export const transactionTypeMap = {
+    1: "納品",
+    2: "返品",
+    3: "処方",
+    4: "棚卸増",
+    5: "棚卸減",
+    11: "入庫",
+    12: "出庫",
+};
+
 
 /**
  * アップロード結果表示用テーブルの HTML を生成
@@ -3007,13 +3552,15 @@ export function renderUploadTableRows(tableId, records) {
     tbody.innerHTML = `<tr><td colspan="14">対象データがありません。</td></tr>`;
     return;
   }
-  const flagMap = {1: "納", 2: "返", 3: "処"};
+  
+  // ★★★ 修正点: 古いflagMapを削除 ★★★
+  
   let html = "";
   records.forEach(rec => {
     html += `
       <tr>
         <td rowspan="2">${rec.transactionDate || ""}</td>
-        <td rowspan="2">${flagMap[rec.flag] || ""}</td>
+        <td rowspan="2">${transactionTypeMap[rec.flag] || ""}</td>
         <td>${rec.yjCode || ""}</td>
         <td class="left" colspan="2">${rec.productName || ""}</td>
         <td class="right" rowspan="2">${rec.datQuantity?.toFixed(2) || ""}</td>
@@ -3057,8 +3604,8 @@ export function setupDateDropdown(inputEl) {
 export async function setupClientDropdown(selectEl) {
   if (!selectEl) return;
   
-  // 既存の選択肢をクリア（先頭の「選択してください」などは残す）
-  const preservedOptions = Array.from(selectEl.querySelectorAll('option[value=""], option[value="--new--"]'));
+  // 「選択してください」のみ保持する
+  const preservedOptions = Array.from(selectEl.querySelectorAll('option[value=""]'));
   selectEl.innerHTML = '';
   preservedOptions.forEach(opt => selectEl.appendChild(opt));
 
@@ -3080,15 +3627,15 @@ export async function setupClientDropdown(selectEl) {
   }
 }
 
+
 ----- C:\Dev\KARASHI\static\js\dat.js -----
-// File: static/js/dat.js (最終修正版)
+// File: static/js/dat.js
 import { createUploadTableHTML, renderUploadTableRows } from './common_table.js';
 
 const datBtn = document.getElementById('datBtn');
 const datInput = document.getElementById('datFileInput');
 const uploadContainer = document.getElementById('upload-output-container');
 
-// ▼▼▼ 修正点: リセット関数をエクスポート ▼▼▼
 export function resetDatUploadView() {
     uploadContainer.innerHTML = createUploadTableHTML('upload-output-table');
 }
@@ -3096,10 +3643,10 @@ export function resetDatUploadView() {
 export function initDatUpload() {
     if (!datBtn || !datInput || !uploadContainer) return;
 
-    // クリック時のリセット処理とファイル選択ダイアログの表示
-    datBtn.addEventListener('click', () => {
-        datInput.click();
-    });
+    // ★★★ 修正点: このファイル内のクリックイベントリスナーを削除 ★★★
+    // datBtn.addEventListener('click', () => {
+    //     datInput.click();
+    // });
 
     datInput.addEventListener('change', async e => {
         if (!e.target.files.length) return;
@@ -3118,270 +3665,182 @@ export function initDatUpload() {
     });
 }
 
+
 ----- C:\Dev\KARASHI\static\js\inout_details_table.js -----
-// File: static/js/inout_details_table.js (Final Version)
-import { initModal, showModal } from './inout_modal.js';
+// File: static/js/inout_details_table.js
+import { initModal } from './inout_modal.js';
+import { transactionTypeMap } from './common_table.js';
 
-const detailsTableBody = document.querySelector('#details-table tbody');
-const addRowBtn = document.getElementById('addRowBtn');
-let targetRow = null;
+let tableBody, addRowBtn, modal;
+const NEW_ROW_ID = 'new-row-';
+let newRowCount = 0;
 
-/**
- * Calculates totals for a given row.
- * @param {HTMLTableRowElement} firstRow - The first row of the entry.
- */
-function calculateRowTotals(firstRow) {
-    if (!firstRow) return;
-    const secondRow = firstRow.nextElementSibling;
+function createNewRow() {
+    newRowCount++;
+    const newRow = document.createElement('tr');
+    const newRow2 = document.createElement('tr');
+    newRow.dataset.rowId = `${NEW_ROW_ID}${newRowCount}`;
+    newRow2.dataset.rowId = `${NEW_ROW_ID}${newRowCount}-2`;
 
-    const quantity = parseFloat(firstRow.cells[5].querySelector('input').value) || 0;
-    const unitPrice = parseFloat(firstRow.cells[8].querySelector('input').value) || 0;
-    const taxRate = parseFloat(document.getElementById('in-out-taxrate').value) || 0;
-    
-    const janPackInnerQty = parseFloat(firstRow.dataset.janPackInnerQty) || 0;
-    const yjQuantity = quantity * janPackInnerQty;
-    secondRow.cells[3].textContent = yjQuantity.toFixed(2);
-
-    const subtotal = quantity * unitPrice;
-    const taxAmount = Math.floor(subtotal * (taxRate / 100));
-
-    secondRow.cells[6].textContent = subtotal.toFixed(0); // Amount cell
-    firstRow.cells[9].textContent = taxAmount.toFixed(0);  // Tax cell
+    const html1 = `
+        <td rowspan="2" class="date-cell"></td>
+        <td rowspan="2" class="type-cell"></td>
+        <td class="yj-code-cell"></td>
+        <td colspan="2" class="product-name-cell"><input type="text" class="product-search-input" placeholder="製品名で検索..."></td>
+        <td rowspan="2"><input type="number" name="datQuantity"></td>
+        <td class="jan-qty-cell"></td>
+        <td class="jan-pack-qty-cell"></td>
+        <td class="jan-unit-cell"></td>
+        <td><input type="number" name="unitPrice" step="any"></td>
+        <td class="tax-amount-cell"></td>
+        <td><input type="text" name="expiryDate"></td>
+        <td><input type="text" name="lotNumber"></td>
+        <td rowspan="2"><button class="delete-row-btn">削除</button></td>
+    `;
+    const html2 = `
+        <td class="jan-code-cell"></td>
+        <td class="package-spec-cell"></td>
+        <td class="maker-name-cell"></td>
+        <td class="yj-qty-cell"></td>
+        <td class="yj-pack-qty-cell"></td>
+        <td class="yj-unit-cell"></td>
+        <td class="subtotal-cell"></td>
+        <td class="tax-rate-cell"></td>
+        <td class="client-code-cell"></td>
+        <td class="receipt-number-cell"></td>
+        <td class="line-number-cell"></td>
+    `;
+    newRow.innerHTML = html1;
+    newRow2.innerHTML = html2;
+    tableBody.appendChild(newRow);
+    tableBody.appendChild(newRow2);
 }
 
-/**
- * Handles product selection from the modal.
- * @param {object} product - The selected product data.
- */
-function handleProductSelection(product) {
-    if (!targetRow) return;
-    const firstRow = targetRow;
-    const secondRow = targetRow.nextElementSibling;
-
-    // --- Store all necessary master data in the row's dataset ---
-    firstRow.dataset.janPackInnerQty = product.janPackInnerQty || '0';
-    firstRow.dataset.kanaName = product.kanaName || '';
-    firstRow.dataset.packageForm = product.packageSpec || '';
-    firstRow.dataset.flagPoison = product.flagPoison || '0';
-    firstRow.dataset.flagDeleterious = product.flagDeleterious || '0';
-    firstRow.dataset.flagNarcotic = product.flagNarcotic || '0';
-    firstRow.dataset.flagPsychotropic = product.flagPsychotropic || '0';
-    firstRow.dataset.flagStimulant = product.flagStimulant || '0';
-    firstRow.dataset.flagStimulantRaw = product.flagStimulantRaw || '0';
-
-    // --- Populate visible cells ---
-    firstRow.cells[2].textContent = product.yjCode || '';
-    firstRow.cells[3].textContent = product.productName || '';
-    firstRow.cells[6].textContent = product.janPackUnitQty || '';
-    firstRow.cells[7].textContent = product.janUnitName || '';
-    firstRow.cells[8].querySelector('input').value = product.nhiPrice ? product.nhiPrice.toFixed(2) : '0.00';
-
-    secondRow.cells[0].textContent = product.productCode || '';
-    secondRow.cells[1].textContent = product.formattedPackageSpec || '';
-    secondRow.cells[2].textContent = product.makerName || '';
-    secondRow.cells[4].textContent = product.yjPackUnitQty || '';
-    secondRow.cells[5].textContent = product.yjUnitName || '';
-    
-    calculateRowTotals(firstRow);
-    targetRow = null;
+export function clearDetailsTable() {
+    tableBody.innerHTML = '';
 }
 
-/**
- * Adds a new empty row to the table.
- */
-function addRow() {
-  const newRowsHTML = `
-    <tr>
-      <td rowspan="2"></td>
-      <td rowspan="2"></td>
-      <td></td>
-      <td colspan="2" class="product-name-cell"></td>
-      <td rowspan="2"></td>
-      <td><input type="text" class="recalc-trigger jan-quantity-input"></td>
-      <td></td>
-      <td></td>
-      <td><input type="text" class="recalc-trigger unit-price-input"></td>
-      <td></td>
-      <td><input type="date"></td>
-      <td><input type="text"></td>
-      <td><button class="delete-row-btn">削除</button></td>
-    </tr>
-    <tr>
-      <td></td>
-      <td></td>
-      <td></td>
-      <td></td>
-      <td></td>
-      <td></td>
-      <td></td>
-      <td></td>
-      <td></td>
-      <td></td>
-    </tr>
-  `;
-  detailsTableBody.insertAdjacentHTML('beforeend', newRowsHTML);
-}
-
-/**
- * Initializes the details table functionality.
- */
-export function initDetailsTable() {
-    if (!detailsTableBody || !addRowBtn) return;
-    initModal(handleProductSelection);
-    addRowBtn.addEventListener('click', addRow);
-    
-    detailsTableBody.addEventListener('click', (event) => {
-        if (event.target.classList.contains('delete-row-btn')) {
-            const firstRow = event.target.closest('tr');
-            const secondRow = firstRow.nextElementSibling;
-            firstRow.remove();
-            if (secondRow) secondRow.remove();
-            return;
-        }
-        const productNameCell = event.target.closest('.product-name-cell');
-        if (productNameCell) {
-            targetRow = productNameCell.closest('tr');
-            showModal();
-        }
+export function populateDetailsTable(records) {
+    clearDetailsTable();
+    let html = "";
+    records.forEach(rec => {
+        html += `
+            <tr data-row-id="${rec.lineNumber}">
+                <td rowspan="2" class="date-cell">${rec.transactionDate}</td>
+                <td rowspan="2" class="type-cell">${transactionTypeMap[rec.flag] || ''}</td>
+                <td class="yj-code-cell">${rec.yjCode || ''}</td>
+                <td colspan="2" class="product-name-cell">${rec.productName || ''}</td>
+                <td rowspan="2"><input type="number" name="datQuantity" value="${rec.datQuantity || ''}"></td>
+                <td class="jan-qty-cell">${rec.janQuantity?.toFixed(2) || ''}</td>
+                <td class="jan-pack-qty-cell">${rec.janPackInnerQty || ''}</td>
+                <td class="jan-unit-cell">${rec.janUnitName || ''}</td>
+                <td><input type="number" name="unitPrice" value="${rec.unitPrice || ''}" step="any"></td>
+                <td class="tax-amount-cell">${rec.taxAmount?.toFixed(2) || ''}</td>
+                <td><input type="text" name="expiryDate" value="${rec.expiryDate || ''}"></td>
+                <td><input type="text" name="lotNumber" value="${rec.lotNumber || ''}"></td>
+                <td rowspan="2"><button class="delete-row-btn">削除</button></td>
+            </tr>
+            <tr data-row-id="${rec.lineNumber}-2">
+                <td class="jan-code-cell">${rec.janCode || ''}</td>
+                <td class="package-spec-cell">${rec.packageSpec || ''}</td>
+                <td class="maker-name-cell">${rec.makerName || ''}</td>
+                <td class="yj-qty-cell">${rec.yjQuantity?.toFixed(2) || ''}</td>
+                <td class="yj-pack-qty-cell">${rec.yjPackUnitQty || ''}</td>
+                <td class="yj-unit-cell">${rec.yjUnitName || ''}</td>
+                <td class="subtotal-cell">${rec.subtotal?.toFixed(2) || ''}</td>
+                <td class="tax-rate-cell">${rec.taxRate != null ? (rec.taxRate * 100).toFixed(0) + "%" : ""}</td>
+                <td class="client-code-cell">${rec.clientCode || ''}</td>
+                <td class="receipt-number-cell">${rec.receiptNumber || ''}</td>
+                <td class="line-number-cell">${rec.lineNumber || ''}</td>
+            </tr>
+        `;
     });
-
-    detailsTableBody.addEventListener('input', (event) => {
-        if (event.target.classList.contains('recalc-trigger')) {
-            const firstRow = event.target.closest('tr');
-            calculateRowTotals(firstRow);
-        }
-    });
-
-    document.getElementById('in-out-taxrate').addEventListener('input', () => {
-        const rows = detailsTableBody.querySelectorAll('tr:nth-child(odd)');
-        rows.forEach(calculateRowTotals);
-    });
+    tableBody.innerHTML = html;
 }
 
-/**
- * Gathers and returns data from the details table.
- * @returns {Array<object>}
- */
 export function getDetailsData() {
     const records = [];
-    const rows = detailsTableBody.querySelectorAll('tr:nth-child(odd)');
-    rows.forEach((firstRow, index) => {
-        const secondRow = firstRow.nextElementSibling;
-        const productName = firstRow.cells[3].textContent.trim();
-        if (!productName) return;
-
-        const ds = firstRow.dataset; // Dataset for easy access
-
+    const rows = tableBody.querySelectorAll('tr:nth-child(odd)');
+    rows.forEach(row1 => {
+        const row2 = row1.nextElementSibling;
         const record = {
-            lineNumber: (index + 1).toString(),
-            yjCode: firstRow.cells[2].textContent,
-            productName: productName,
-            janQuantity: parseFloat(firstRow.cells[5].querySelector('input').value) || 0,
-            janPackUnitQty: parseFloat(firstRow.cells[6].textContent) || 0,
-            janUnitName: firstRow.cells[7].textContent,
-            unitPrice: parseFloat(firstRow.cells[8].querySelector('input').value) || 0,
-            expiryDate: firstRow.cells[10].querySelector('input').value.replace(/-/g, ''),
-            lotNumber: firstRow.cells[11].querySelector('input').value,
-            janCode: secondRow.cells[0].textContent,
-            packageSpec: secondRow.cells[1].textContent,
-            makerName: secondRow.cells[2].textContent,
-            yjQuantity: parseFloat(secondRow.cells[3].textContent) || 0,
-            yjPackUnitQty: parseFloat(secondRow.cells[4].textContent) || 0,
-            yjUnitName: secondRow.cells[5].textContent,
-            subtotal: parseFloat(secondRow.cells[6].textContent) || 0,
-            taxAmount: parseFloat(firstRow.cells[9].textContent) || 0,
-            // --- Add the new fields from the dataset ---
-            datQuantity: 0, // Set to 0 as requested
-            kanaName: ds.kanaName,
-            packageForm: ds.packageForm,
-            flagPoison: parseInt(ds.flagPoison, 10) || 0,
-            flagDeleterious: parseInt(ds.flagDeleterious, 10) || 0,
-            flagNarcotic: parseInt(ds.flagNarcotic, 10) || 0,
-            flagPsychotropic: parseInt(ds.flagPsychotropic, 10) || 0,
-            flagStimulant: parseInt(ds.flagStimulant, 10) || 0,
-            flagStimulantRaw: parseInt(ds.flagStimulantRaw, 10) || 0,
+            yjCode: row1.querySelector('.yj-code-cell').textContent,
+            janCode: row2.querySelector('.jan-code-cell').textContent,
+            productName: row1.querySelector('.product-name-cell').textContent || row1.querySelector('.product-name-cell input')?.value,
+            datQuantity: parseFloat(row1.querySelector('input[name="datQuantity"]').value) || 0,
+            unitPrice: parseFloat(row1.querySelector('input[name="unitPrice"]').value) || 0,
+            expiryDate: row1.querySelector('input[name="expiryDate"]').value,
+            lotNumber: row1.querySelector('input[name="lotNumber"]').value,
+            lineNumber: row2.querySelector('.line-number-cell').textContent,
         };
         records.push(record);
     });
     return records;
 }
 
-/**
- * Clears the details table.
- */
-export function clearDetailsTable() {
-    detailsTableBody.innerHTML = '';
-}
-
-/**
- * Populates the details table with loaded data.
- * @param {Array<object>} records - The transaction records to display.
- */
-export function populateDetailsTable(records) {
-    clearDetailsTable();
-    let newHTML = '';
-
-    records.forEach(rec => {
-        const expiryDateFormatted = rec.expiryDate ? `${rec.expiryDate.slice(0, 4)}-${rec.expiryDate.slice(4, 6)}-${rec.expiryDate.slice(6, 8)}` : '';
-        const flagMap = {1: "入庫", 2: "出庫"};
-
-        // Recreate the two-row structure for each record, including the data-* attributes
-        newHTML += `
-            <tr 
-              data-jan-pack-inner-qty="${rec.janPackInnerQty || 0}"
-              data-kana-name="${rec.kanaName || ''}"
-              data-package-form="${rec.packageForm || ''}"
-              data-flag-poison="${rec.flagPoison || 0}"
-              data-flag-deleterious="${rec.flagDeleterious || 0}"
-              data-flag-narcotic="${rec.flagNarcotic || 0}"
-              data-flag-psychotropic="${rec.flagPsychotropic || 0}"
-              data-flag-stimulant="${rec.flagStimulant || 0}"
-              data-flag-stimulant-raw="${rec.flagStimulantRaw || 0}"
-            >
-                <td rowspan="2">${rec.transactionDate || ''}</td>
-                <td rowspan="2">${flagMap[rec.flag] || ''}</td>
-                <td>${rec.yjCode || ''}</td>
-                <td colspan="2" class="product-name-cell">${rec.productName || ''}</td>
-                <td rowspan="2">${rec.datQuantity?.toFixed(2) || ''}</td>
-                <td><input type="text" class="recalc-trigger jan-quantity-input" value="${rec.janQuantity || 0}"></td>
-                <td>${rec.janPackUnitQty || ''}</td>
-                <td>${rec.janUnitName || ''}</td>
-                <td><input type="text" class="recalc-trigger unit-price-input" value="${rec.unitPrice?.toFixed(2) || 0}"></td>
-                <td>${rec.taxAmount || 0}</td>
-                <td><input type="date" value="${expiryDateFormatted}"></td>
-                <td><input type="text" value="${rec.lotNumber || ''}"></td>
-                <td><button class="delete-row-btn">削除</button></td>
-            </tr>
-            <tr>
-                <td>${rec.janCode || ''}</td>
-                <td>${rec.packageSpec || ''}</td>
-                <td>${rec.makerName || ''}</td>
-                <td>${rec.yjQuantity?.toFixed(2) || 0}</td>
-                <td>${rec.yjPackUnitQty || ''}</td>
-                <td>${rec.yjUnitName || ''}</td>
-                <td>${rec.subtotal || 0}</td>
-                <td>${rec.taxRate != null ? (rec.taxRate * 100).toFixed(0) + "%" : ""}</td>
-                <td>${rec.clientCode || ''}</td>
-                <td>${rec.receiptNumber || ''}</td>
-                <td>${rec.lineNumber || ''}</td>
-            </tr>
-        `;
+export function initDetailsTable() {
+    tableBody = document.querySelector('#details-table tbody');
+    addRowBtn = document.getElementById('addRowBtn');
+    
+    if(!tableBody || !addRowBtn) return;
+    
+    modal = initModal((selectedProduct) => {
+        const activeInput = document.querySelector('.product-search-input.active');
+        if (activeInput) {
+            const row1 = activeInput.closest('tr');
+            const row2 = row1.nextElementSibling;
+            
+            row1.querySelector('.product-name-cell').innerHTML = selectedProduct.productName; // Use innerHTML to remove input
+            row1.querySelector('.yj-code-cell').textContent = selectedProduct.yjCode;
+            row1.querySelector('input[name="unitPrice"]').value = selectedProduct.nhiPrice || 0;
+            row1.querySelector('.jan-unit-cell').textContent = selectedProduct.janUnitName || '';
+            
+            row2.querySelector('.jan-code-cell').textContent = selectedProduct.productCode;
+            row2.querySelector('.package-spec-cell').textContent = selectedProduct.formattedPackageSpec;
+            row2.querySelector('.maker-name-cell').textContent = selectedProduct.makerName;
+            
+            row1.querySelector('input[name="datQuantity"]').focus();
+        }
     });
 
-    detailsTableBody.innerHTML = newHTML;
+    addRowBtn.addEventListener('click', createNewRow);
+
+    tableBody.addEventListener('focusin', (e) => {
+        if (e.target.classList.contains('product-search-input')) {
+            document.querySelectorAll('.product-search-input.active').forEach(el => el.classList.remove('active'));
+            e.target.classList.add('active');
+            e.target.classList.add('highlight-search'); // ★★★ 追加: ハイライトクラス
+            modal.show();
+        }
+    });
+    
+    // ★★★ 追加: フォーカスが外れたらハイライトを消す ★★★
+    tableBody.addEventListener('focusout', (e) => {
+        if (e.target.classList.contains('product-search-input')) {
+            e.target.classList.remove('highlight-search');
+        }
+    });
+
+    tableBody.addEventListener('click', (e) => {
+        if (e.target.classList.contains('delete-row-btn')) {
+            const row1 = e.target.closest('tr');
+            const row2 = row1.nextElementSibling;
+            row1.remove();
+            if (row2) row2.remove();
+        }
+    });
 }
 
+
 ----- C:\Dev\KARASHI\static\js\inout_header.js -----
-// File: static/js/inout_header.js (Corrected)
+// File: static/js/inout_header.js
 import { setupDateDropdown, setupClientDropdown } from './common_table.js';
 
 const NEW_ENTRY_VALUE = '--new--';
 
 let clientSelect, receiptSelect, saveBtn, deleteBtn, headerDateInput, headerTypeSelect;
-
 let newClientName = null;
-let currentLoadedReceipt = null; // Variable to track the loaded slip
-
+let currentLoadedReceipt = null;
 
 async function initializeClientDropdown() {
     clientSelect.innerHTML = `<option value="">選択してください</option>`;
@@ -3393,7 +3852,6 @@ async function initializeClientDropdown() {
     clientSelect.appendChild(newOption);
 }
 
-// ▼▼▼ 修正点: リセット関数をエクスポート ▼▼▼
 export function resetHeader() {
     if (!clientSelect || !headerDateInput) return;
     setupDateDropdown(headerDateInput);
@@ -3423,7 +3881,7 @@ export async function initHeader(getDetailsData, clearDetailsTable, populateDeta
     setupDateDropdown(headerDateInput);
     await initializeClientDropdown();
     receiptSelect.innerHTML = `
-        <option value="">日付を選択してください</option>
+        <option value="">選択してください</option>
         <option value="${NEW_ENTRY_VALUE}">--- 新規作成 ---</option>
     `;
     
@@ -3483,15 +3941,16 @@ export async function initHeader(getDetailsData, clearDetailsTable, populateDeta
 
         if (selectedValue === NEW_ENTRY_VALUE || selectedValue === "") {
             clearDetailsTable();
-            currentLoadedReceipt = null; // Clear loaded receipt state
+            currentLoadedReceipt = null;
         } else {
+            window.showLoading();
             try {
                 const res = await fetch(`/api/transaction/${selectedValue}`);
                 if (!res.ok) throw new Error('明細の読込に失敗');
                 const records = await res.json();
 
                 if (records && records.length > 0) {
-                    currentLoadedReceipt = selectedValue; // Set the loaded receipt number
+                    currentLoadedReceipt = selectedValue;
                     const clientCode = records[0].clientCode;
                     clientSelect.value = clientCode;
                     newClientName = null;
@@ -3500,7 +3959,9 @@ export async function initHeader(getDetailsData, clearDetailsTable, populateDeta
                 populateDetailsTable(records);
             } catch (err) {
                 console.error(err);
-                alert(err.message);
+                window.showNotification(err.message, 'error');
+            } finally {
+                window.hideLoading();
             }
         }
     });
@@ -3516,14 +3977,14 @@ export async function initHeader(getDetailsData, clearDetailsTable, populateDeta
             clientCode = '';
         } else {
             if (!clientCode || clientCode === NEW_ENTRY_VALUE) {
-                alert('得意先を選択または新規作成してください。');
+                window.showNotification('得意先を選択または新規作成してください。', 'error');
                 return;
             }
         }
         
         const records = getDetailsData();
         if (records.length === 0) {
-            alert('保存する明細データがありません。');
+            window.showNotification('保存する明細データがありません。', 'error');
             return;
         }
         
@@ -3534,8 +3995,10 @@ export async function initHeader(getDetailsData, clearDetailsTable, populateDeta
             transactionDate: headerDateInput.value.replace(/-/g, ''),
             transactionType: headerTypeSelect.value,
             records: records,
-            originalReceiptNumber: currentLoadedReceipt // Send the original receipt number
+            originalReceiptNumber: currentLoadedReceipt
         };
+        
+        window.showLoading();
 
         try {
             const res = await fetch('/api/inout/save', {
@@ -3549,33 +4012,31 @@ export async function initHeader(getDetailsData, clearDetailsTable, populateDeta
                 throw new Error(resData.message || `保存に失敗しました (HTTP ${res.status})`);
             }
 
-            alert(`データを保存しました。\n伝票番号: ${resData.receiptNumber}`);
+            window.showNotification(`データを保存しました。\n伝票番号: ${resData.receiptNumber}`, 'success');
             
-            // Reset UI
+            resetHeader();
             clearDetailsTable();
-            await initializeClientDropdown();
-            newClientName = null;
-            currentLoadedReceipt = null;
-            headerDateInput.dispatchEvent(new Event('change'));
-            receiptSelect.value = NEW_ENTRY_VALUE;
-            deleteBtn.disabled = true;
 
         } catch (err) {
             console.error(err);
-            alert(err.message);
+            window.showNotification(err.message, 'error');
+        } finally {
+            window.hideLoading();
         }
     });
 
     deleteBtn.addEventListener('click', async () => {
         const receiptNumber = receiptSelect.value;
         if (!receiptNumber || receiptNumber === NEW_ENTRY_VALUE) {
-            alert("削除対象の伝票が選択されていません。");
+            window.showNotification("削除対象の伝票が選択されていません。", 'error');
             return;
         }
 
         if (!confirm(`伝票番号 [${receiptNumber}] を完全に削除します。よろしいですか？`)) {
             return;
         }
+        
+        window.showLoading();
 
         try {
             const res = await fetch(`/api/transaction/delete/${receiptNumber}`, {
@@ -3587,26 +4048,22 @@ export async function initHeader(getDetailsData, clearDetailsTable, populateDeta
                 throw new Error(errData?.message || '削除に失敗しました。');
             }
 
-            alert(`伝票 [${receiptNumber}] を削除しました。`);
+            window.showNotification(`伝票 [${receiptNumber}] を削除しました。`, 'success');
             
+            resetHeader();
             clearDetailsTable();
-            await initializeClientDropdown();
-            receiptSelect.innerHTML = `
-                <option value="">日付を選択してください</option>
-                <option value="${NEW_ENTRY_VALUE}" selected>--- 新規作成 ---</option>
-            `;
-            newClientName = null;
-            deleteBtn.disabled = true;
-            headerDateInput.dispatchEvent(new Event('change'));
 
         } catch(err) {
             console.error(err);
-            alert(err.message);
+            window.showNotification(err.message, 'error');
+        } finally {
+            window.hideLoading();
         }
     });
 
     headerDateInput.dispatchEvent(new Event('change'));
 }
+
 
 ----- C:\Dev\KARASHI\static\js\inout_modal.js -----
 // File: static/js/inout_modal.js
@@ -3713,22 +4170,116 @@ export function showModal() {
 }
 
 ----- C:\Dev\KARASHI\static\js\inout.js -----
-// File: static/js/inout.js (最終修正版)
 import { initHeader, resetHeader } from './inout_header.js';
-import { initDetailsTable, clearDetailsTable } from './inout_details_table.js';
+import { initDetailsTable, getDetailsData, clearDetailsTable, populateDetailsTable } from './inout_details_table.js';
 
-/**
- * Initializes all In/Out screen functionality.
- */
 export async function initInOut() {
   initDetailsTable();
-  await initHeader();
+  await initHeader(getDetailsData, clearDetailsTable, populateDetailsTable);
 }
 
-// ▼▼▼ 修正点: リセット関数をエクスポート ▼▼▼
 export function resetInOutView() {
     clearDetailsTable();
     resetHeader();
+}
+
+----- C:\Dev\KARASHI\static\js\inventory.js -----
+// File: static/js/inventory.js
+import { createUploadTableHTML, renderUploadTableRows } from './common_table.js';
+
+let view, uploadBtn, fileInput, outputContainer;
+
+function renderResults(records) {
+    if (!records || records.length === 0) {
+        outputContainer.innerHTML = `<p>調整対象のデータはありませんでした。</p>`;
+        return;
+    }
+    // YJ単位での調整結果なので、少し列名を変更して表示
+    const flagMap = {4: "棚卸増", 5: "棚卸減"};
+    const tbody = document.querySelector('#inventory-output-table tbody');
+    let html = "";
+    records.forEach(rec => {
+        html += `
+          <tr>
+            <td rowspan="2">${rec.transactionDate || ""}</td>
+            <td rowspan="2">${flagMap[rec.flag] || ""}</td>
+            <td>${rec.yjCode || ""}</td>
+            <td class="left" colspan="2">${rec.productName || "(新規マスター)"}</td>
+            <td class="right" rowspan="2"></td>
+            <td class="right"></td>
+            <td class="right"></td>
+            <td></td>
+            <td class="right"></td>
+            <td class="right"></td>
+            <td></td>
+            <td class="left"></td>
+            <td class="left"></td>
+          </tr>
+          <tr>
+            <td>${rec.janCode || ""}</td>
+            <td class="left"></td>
+            <td class="left"></td>
+            <td class="right">${rec.yjQuantity?.toFixed(2) || ""}</td>
+            <td class="right"></td>
+            <td></td>
+            <td class="right"></td>
+            <td class="right"></td>
+            <td class="left"></td>
+            <td class="left">${rec.receiptNumber || ""}</td>
+            <td class="right">${rec.lineNumber || ""}</td>
+          </tr>
+        `;
+    });
+    tbody.innerHTML = html;
+}
+
+export function initInventoryView() {
+    view = document.getElementById('inventory-view');
+    if (!view) return;
+
+    uploadBtn = document.getElementById('inventoryUploadBtn');
+    fileInput = document.getElementById('inventoryFileInput');
+    outputContainer = document.getElementById('inventory-output-container');
+    
+    outputContainer.innerHTML = createUploadTableHTML('inventory-output-table');
+
+    uploadBtn.addEventListener('click', () => fileInput.click());
+
+    fileInput.addEventListener('change', async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        outputContainer.innerHTML = `<p>処理中...</p>`;
+
+        const formData = new FormData();
+        formData.append('file', file);
+
+        try {
+            const res = await fetch('/api/inventory/upload', {
+                method: 'POST',
+                body: formData,
+            });
+            const data = await res.json();
+            if (!res.ok) {
+                // サーバーからのエラーメッセージを優先して表示
+                const errorText = await res.text();
+                try {
+                    const errorJson = JSON.parse(errorText);
+                    throw new Error(errorJson.message || errorText);
+                } catch {
+                    throw new Error(errorText);
+                }
+            }
+            alert(data.message);
+            outputContainer.innerHTML = createUploadTableHTML('inventory-output-table');
+            renderResults(data.details);
+
+        } catch (err) {
+            outputContainer.innerHTML = `<p style="color:red;">エラー: ${err.message}</p>`;
+        } finally {
+            fileInput.value = '';
+        }
+    });
 }
 
 ----- C:\Dev\KARASHI\static\js\master_edit.js -----
@@ -3951,6 +4502,34 @@ export function initMasterEdit() {
 
 }
 
+----- C:\Dev\KARASHI\static\js\reprocess.js -----
+// File: static/js/reprocess.js
+
+export function initReprocessButton() {
+    const reprocessBtn = document.getElementById('reprocessBtn');
+    if (!reprocessBtn) return;
+
+    reprocessBtn.addEventListener('click', async () => {
+        if (!confirm('仮登録状態の取引データを、最新のマスター情報で更新します。よろしいですか？')) {
+            return;
+        }
+
+        try {
+            const res = await fetch('/api/transactions/reprocess', {
+                method: 'POST',
+            });
+            const data = await res.json();
+            if (!res.ok) {
+                throw new Error(data.message || '処理に失敗しました。');
+            }
+            alert(data.message);
+        } catch (err) {
+            console.error(err);
+            alert(`エラー: ${err.message}`);
+        }
+    });
+}
+
 ----- C:\Dev\KARASHI\static\js\update_master.js -----
 // File: static/js/update_master.js (新規作成)
 
@@ -4013,14 +4592,13 @@ export function initUpdateMaster() {
 }
 
 ----- C:\Dev\KARASHI\static\js\usage.js -----
-// File: static/js/usage.js (最終修正版)
+// File: static/js/usage.js
 import { createUploadTableHTML, renderUploadTableRows } from './common_table.js';
 
 const usageBtn = document.getElementById('usageBtn');
 const usageInput = document.getElementById('usageFileInput');
 const uploadContainer = document.getElementById('upload-output-container');
 
-// ▼▼▼ 修正点: リセット関数をエクスポート ▼▼▼
 export function resetUsageUploadView() {
     uploadContainer.innerHTML = createUploadTableHTML('upload-output-table');
 }
@@ -4028,9 +4606,10 @@ export function resetUsageUploadView() {
 export function initUsageUpload() {
     if(!usageBtn || !usageInput || !uploadContainer) return;
 
-    usageBtn.addEventListener('click', () => {
-        usageInput.click();
-    });
+    // ★★★ 修正点: このファイル内のクリックイベントリスナーを削除 ★★★
+    // usageBtn.addEventListener('click', () => {
+    //     usageInput.click();
+    // });
 
     usageInput.addEventListener('change', async e => {
         if (!e.target.files.length) return;
@@ -4049,6 +4628,7 @@ export function initUsageUpload() {
     });
 }
 
+
 ----- C:\Dev\KARASHI\static\index.html -----
 <!DOCTYPE html>
 <html lang="ja">
@@ -4061,7 +4641,8 @@ export function initUsageUpload() {
 </head>
 <body>
 
-<header>
+<!-- ★★★ 修正点: ヘッダーにIDを追加 ★★★ -->
+<header id="main-header">
     <button id="inOutViewBtn" class="btn">入庫・出庫</button>
     <button id="masterEditViewBtn" class="btn">マスター</button>
     <button id="datBtn" class="btn">納品・返品</button>
@@ -4071,197 +4652,210 @@ export function initUsageUpload() {
     <button id="exportProductsBtn" class="btn">製品エクスポート</button>
     <button id="importProductsBtn" class="btn">製品インポート</button>
     <button id="updateJcshmsBtn" class="btn">JCSHMSマスター更新</button>
+    <button id="reprocessBtn" class="btn">仮登録を再計算</button>
     <button id="aggregationBtn" class="btn">集計</button>
     <input type="file" id="importClientsInput" style="display:none;" accept=".csv">
     <input type="file" id="importProductsInput" style="display:none;" accept=".csv">
 </header>
 
-    <main>
-        <div id="upload-view" class="hidden">
-            <input type="file" id="datFileInput" multiple style="display:none;">
-            <input type="file" id="usageFileInput" style="display:none;">
-            <div id="upload-output-container" class="table-container">
-            </div>
-         </div>
+<main>
+    <!-- ★★★ 修正点: 見出し(h1)を削除 ★★★ -->
+    <div id="upload-view" class="hidden">
+        <input type="file" id="datFileInput" multiple style="display:none;">
+        <input type="file" id="usageFileInput" style="display:none;">
+        <div id="upload-output-container" class="table-container">
+        </div>
+     </div>
 
-        <div id="in-out-view" class="hidden">
-             <div class="in-out-header">
-                <h1>入庫出庫</h1>
-            </div>
+    <div id="in-out-view" class="hidden">
+        <!-- ★★★ 修正点: 見出し(h1, h2)を削除 ★★★ -->
+        <div class="section">
+            <table id="controller-table" class="data-table" cellspacing="0" cellpadding="0">
+                <thead>
+                    <tr>
+                        <td class="center" style="width: 10%;">日付</td>
+                        <td class="center" style="width: 10%;">種別</td>
+                        <td style="width: 25%;"></td> <td class="center" style="width: 5%;">税率</td>
+                        <td class="center" style="width: 20%;">得意先</td>
+                        <td class="center" style="width: 20%;">伝票番号</td>
+                        <td class="center" style="width: 10%;">保存・削除</td>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><input type="date" id="in-out-date"></td>
+                        <td><select id="in-out-type"><option>入庫</option><option>出庫</option></select></td>
+                        <td></td> <td><input type="text" id="in-out-taxrate" value="10"></td>
+                        <td><select id="in-out-client" style="width:100%;"></select></td>
+                        <td><select id="in-out-receipt" style="width:100%;"></select></td>
+                        <td style="display: flex; gap: 5px;">
+                            <button id="saveBtn" class="btn">保存</button>
+                            <button id="deleteBtn" class="btn">伝票削除</button>
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
 
-            <div class="section">
-                <h2>表1: div2までの表</h2>
-                <table id="controller-table" class="data-table" cellspacing="0" cellpadding="0">
+        <div class="section">
+             <div id="details-table-container">
+                <table id="details-table" class="data-table" cellspacing="0" cellpadding="0">
                     <thead>
                         <tr>
-                            <td class="center" style="width: 10%;">日付</td>
-                            <td class="center" style="width: 10%;">種別</td>
-                            <td style="width: 25%;"></td> <td class="center" style="width: 5%;">税率</td>
-                            <td class="center" style="width: 20%;">得意先</td>
-                            <td class="center" style="width: 20%;">伝票番号</td>
-                            <td class="center" style="width: 10%;">保存・削除</td>
+                            <td rowspan="2" class="center">日付</td>
+                            <td rowspan="2" class="center">種別</td>
+                            <td class="center">YJ</td>
+                            <td colspan="2" class="center">製品名</td>
+                            <td rowspan="2" class="center">個数</td>
+                            <td class="center">JAN数量</td>
+                            <td class="center">JAN包装数量</td>
+                            <td class="center">JAN単位</td>
+                            <td class="center">単価</td>
+                            <td class="center">税額</td>
+                            <td class="center">期限</td>
+                            <td class="center">ロット</td>
+                            <td class="center"><button id="addRowBtn">追加</button></td>
+                        </tr>
+                        <tr>
+                            <td class="center">JAN</td>
+                            <td class="center">包装</td>
+                            <td class="center">メーカー</td>
+                            <td class="center">YJ数量</td>
+                            <td class="center">YJ包装数量</td>
+                            <td class="center">YJ単位</td>
+                            <td class="center">金額</td>
+                            <td class="center">税率</td>
+                            <td class="center">得意先</td>
+                            <td class="center">伝票番号</td>
+                            <td class="center">行</td>
                         </tr>
                     </thead>
-                    <tbody>
-                         <tr>
-                            <td><input type="date" id="in-out-date"></td>
-                            <td><select id="in-out-type"><option>入庫</option><option>出庫</option></select></td>
-                            <td></td> <td><input type="text" id="in-out-taxrate" value="10"></td>
-                            <td><select id="in-out-client" style="width:100%;"></select></td>
-                            <td><select id="in-out-receipt" style="width:100%;"></select></td>
-                            <td style="display: flex; gap: 5px;">
-                                <button id="saveBtn" class="btn">保存</button>
-                                <button id="deleteBtn" class="btn">伝票削除</button>
-                            </td>
-                         </tr>
+                     <tbody>
                     </tbody>
                 </table>
             </div>
+        </div>
 
-            <div class="section">
-                <h2>表2: div3からの表</h2>
-                 <div id="details-table-container">
-                    <table id="details-table" class="data-table" cellspacing="0" cellpadding="0">
+         <div id="search-modal" class="modal-overlay hidden">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2>薬品検索</h2>
+                    <button id="closeModalBtn" class="close-button">&times;</button>
+                 </div>
+                <div style="margin-bottom: 10px; display: flex; gap: 5px;">
+                    <input type="text" id="product-search-input" placeholder="製品名またはカナ名（2文字以上）" style="flex-grow: 1; padding: 5px;">
+                    <button id="product-search-btn" class="btn">検索</button>
+                </div>
+                <div class="modal-body" id="search-results-container">
+                    <table class="data-table" id="search-results-table">
                         <thead>
                             <tr>
-                                <td rowspan="2" class="center">日付</td>
-                                <td rowspan="2" class="center">種別</td>
-                                <td class="center">YJ</td>
-                                 <td colspan="2" class="center">製品名</td>
-                                <td rowspan="2" class="center">個数</td>
-                                <td class="center">JAN数量</td>
-                                 <td class="center">JAN包装数量</td>
-                                <td class="center">JAN単位</td>
-                                <td class="center">単価</td>
-                                 <td class="center">税額</td>
-                                <td class="center">期限</td>
-                                <td class="center">ロット</td>
-                                <td class="center"><button id="addRowBtn">追加</button></td>
-                            </tr>
-                            <tr>
-                                <td class="center">JAN</td>
-                                <td class="center">包装</td>
-                                <td class="center">メーカー</td>
-                                 <td class="center">YJ数量</td>
-                                <td class="center">YJ包装数量</td>
-                                <td class="center">YJ単位</td>
-                                 <td class="center">金額</td>
-                                <td class="center">税率</td>
-                                <td class="center">得意先</td>
-                                 <td class="center">伝票番号</td>
-                                <td class="center">行</td>
+                                <th>製品名</th>
+                                <th>メーカー</th>
+                                <th>包装</th>
+                                <th>YJコード</th>
+                                 <th>JANコード</th>
+                                <th>選択</th>
                             </tr>
                         </thead>
-                         <tbody>
+                        <tbody>
                         </tbody>
                     </table>
                 </div>
-            </div>
-
-             <div id="search-modal" class="modal-overlay hidden">
-                <div class="modal-content">
-                    <div class="modal-header">
-                         <h2>薬品検索</h2>
-                         <button id="closeModalBtn" class="close-button">&times;</button>
-                     </div>
-                    <div style="margin-bottom: 10px; display: flex; gap: 5px;">
-                        <input type="text" id="product-search-input" placeholder="製品名またはカナ名（2文字以上）" style="flex-grow: 1; padding: 5px;">
-                        <button id="product-search-btn" class="btn">検索</button>
-                    </div>
-                    <div class="modal-body" id="search-results-container">
-                        <table class="data-table" id="search-results-table">
-                             <thead>
-                                <tr>
-                                    <th>製品名</th>
-                                     <th>メーカー</th>
-                                    <th>包装</th>
-                                    <th>YJコード</th>
-                                     <th>JANコード</th>
-                                    <th>選択</th>
-                                 </tr>
-                            </thead>
-                            <tbody>
-                            </tbody>
-                         </table>
-                    </div>
-                 </div>
-            </div>
-        </div>
-
-<div id="master-edit-view" class="hidden">
-    <div class="in-out-header">
-        <h1>マスター編集</h1>
-        <div>
-             <button id="addMasterRowBtn" class="btn">新規行を追加</button>
-            <button id="refreshMastersBtn" class="btn">一覧を更新</button>
+             </div>
         </div>
     </div>
-    <div class="table-container">
-        <table id="master-edit-table" class="data-table">
-            <thead>
+
+    <div id="master-edit-view" class="hidden">
+        <!-- ★★★ 修正点: 見出し(h1)を削除 ★★★ -->
+        <div class="in-out-header">
+            <!-- ★★★ 修正点: h1を削除したため、空のdivでボタンを右寄せに保つ ★★★ -->
+            <div></div>
+            <div>
+                <button id="addMasterRowBtn" class="btn">新規行を追加</button>
+                <button id="refreshMastersBtn" class="btn">一覧を更新</button>
+            </div>
+        </div>
+        <div class="table-container">
+            <table id="master-edit-table" class="data-table">
+                <thead>
                 </thead>
-            <tbody>
-                 </tbody>
-        </table>
+                <tbody>
+                </tbody>
+            </table>
         </div>
-</div>
-
-<div id="aggregation-view" class="hidden">
-    <div class="in-out-header">
-        <h1>集計</h1>
     </div>
 
-    <div class="filter-container" style="border: 1px solid #ccc; padding: 15px; margin-bottom: 20px; display: flex; flex-wrap: wrap; gap: 20px; align-items: center;">
-        <div class="filter-group">
-            <label for="startDate">開始</label>
-            <input type="date" id="startDate">
-        </div>
-        <div class="filter-group">
-            <label for="endDate">終了</label>
-            <input type="date" id="endDate">
-        </div>
-        <div class="filter-group">
-            <label for="kanaName">カナ名</label>
-            <input type="text" id="kanaName" placeholder="（部分一致）">
-        </div>
-        <div class="filter-group">
-            <label>薬の種類</label>
-            <div class="filter-group-checkbox" style="display: flex; flex-wrap: wrap; gap: 5px 15px; align-items: center;">
-                <label><input type="checkbox" name="drugType" value="poison"> 毒薬</label>
-                <label><input type="checkbox" name="drugType" value="deleterious"> 劇薬</label>
-                <label><input type="checkbox" name="drugType" value="narcotic"> 麻薬</label>
-                <label><input type="checkbox" name="drugType" value="psychotropic1"> 向精神薬(1)</label>
-                 <label><input type="checkbox" name="drugType" value="psychotropic2"> 向精神薬(2)</label>
-                <label><input type="checkbox" name="drugType" value="psychotropic3"> 向精神薬(3)</label>
-                <label><input type="checkbox" name="drugType" value="stimulant"> 覚醒剤</label>
-                <label><input type="checkbox" name="drugType" value="stimulant_raw"> 覚醒剤原料</label>
-                <label style="border-left: 2px solid #999; padding-left: 15px; margin-left: 5px;"><input type="checkbox" id="no-movement-filter"> 動きのない品目</label>
+    <div id="aggregation-view" class="hidden">
+        <!-- ★★★ 修正点: 見出し(h1)を削除 ★★★ -->
+        <div class="filter-container">
+            <div class="filter-group">
+                <label for="startDate">開始</label>
+                <input type="date" id="startDate">
+            </div>
+            <div class="filter-group">
+                <label for="endDate">終了</label>
+                <input type="date" id="endDate">
+            </div>
+            <div class="filter-group">
+                <label for="kanaName">カナ名</label>
+                <input type="text" id="kanaName" placeholder="（部分一致）">
+            </div>
+            <div class="filter-group">
+                <label>薬の種類</label>
+                <div class="filter-group-checkbox">
+                    <label><input type="checkbox" name="drugType" value="poison"> 毒薬</label>
+                    <label><input type="checkbox" name="drugType" value="deleterious"> 劇薬</label>
+                    <label><input type="checkbox" name="drugType" value="narcotic"> 麻薬</label>
+                    <label><input type="checkbox" name="drugType" value="psychotropic1"> 向精神薬(1)</label>
+                    <label><input type="checkbox" name="drugType" value="psychotropic2"> 向精神薬(2)</label>
+                    <label><input type="checkbox" name="drugType" value="psychotropic3"> 向精神薬(3)</label>
+                    <label><input type="checkbox" name="drugType" value="stimulant"> 覚醒剤</label>
+                    <label><input type="checkbox" name="drugType" value="stimulant_raw"> 覚醒剤原料</label>
+                </div>
+            </div>
+             <div class="filter-group">
+                 <label style="visibility: hidden;">ダミー</label>
+                 <label class="no-movement-label"><input type="checkbox" id="no-movement-filter"> 動きのない品目</label>
+            </div>
+            <div class="filter-group-buttons">
+                <button id="run-aggregation-btn" class="btn">集計実行</button>
+                <button id="print-aggregation-btn" class="btn">印刷</button>
             </div>
         </div>
-        <button id="run-aggregation-btn" class="btn">集計実行</button>
-        <button id="print-aggregation-btn" class="btn">印刷</button>
-    </div>
-    
-    <div id="aggregation-output-container" class="table-container">
+        
+        <div id="aggregation-output-container" class="table-container">
         </div>
-</div>
+    </div>
 </main>
 
-    </main>
+<!-- ★★★ 追加: ローディング表示、通知、トップへ戻るボタンのHTML ★★★ -->
+<div id="loading-overlay" class="hidden">
+    <div class="spinner"></div>
+    <p>処理中...</p>
+</div>
 
-    <script type="module" src="/static/js/app.js"></script>
+<div id="notification-box" class="hidden"></div>
+
+<button id="back-to-top" class="hidden" title="一番上へ戻る">&uarr;</button>
+
+<script type="module" src="/static/js/app.js"></script>
 
 </body>
 </html>
 
+
 ----- C:\Dev\KARASHI\transaction\handler.go -----
-// File: transaction/handler.go (New File)
+// File: transaction/handler.go
 package transaction
 
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"karashi/db"
+	"karashi/mappers" // mappersをインポート
+	"log"
 	"net/http"
 	"strings"
 )
@@ -4335,6 +4929,101 @@ func DeleteTransactionHandler(conn *sql.DB) http.HandlerFunc {
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{"message": "Slip deleted successfully"})
+	}
+}
+
+// ▼▼▼ このハンドラを新規追加 ▼▼▼
+// ReProcessTransactionsHandlerは仮トランザクションを再処理します
+func ReProcessTransactionsHandler(conn *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		provisionalRecords, err := db.GetProvisionalTransactions(conn)
+		if err != nil {
+			log.Printf("Failed to get provisional transactions: %v", err)
+			http.Error(w, "Failed to get provisional transactions", http.StatusInternalServerError)
+			return
+		}
+
+		if len(provisionalRecords) == 0 {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]string{"message": "更新対象のデータはありませんでした。"})
+			return
+		}
+
+		tx, err := conn.Begin()
+		if err != nil {
+			http.Error(w, "Failed to start transaction", http.StatusInternalServerError)
+			return
+		}
+		defer tx.Rollback()
+
+		updatedCount := 0
+		for _, record := range provisionalRecords {
+			if record.JanCode == "" {
+				continue
+			}
+			master, err := db.GetProductMasterByCode(conn, record.JanCode)
+			if err != nil || master == nil {
+				continue // マスターが見つからない場合はスキップ
+			}
+
+			recCopy := record
+
+			// マッパーを呼び出してトランザクション情報を更新
+			mappers.MapProductMasterToTransaction(&recCopy, master)
+
+			// マスターの由来に基づいてステータスを決定
+			if master.Origin == "JCSHMS" {
+				recCopy.ProcessFlagMA = "COMPLETE"
+				recCopy.ProcessingStatus = sql.NullString{String: "completed", Valid: true}
+			} else {
+				recCopy.ProcessFlagMA = "PROVISIONAL"
+				recCopy.ProcessingStatus = sql.NullString{String: "provisional", Valid: true} // provisionalのまま
+			}
+
+			// 更新されたトランザクション情報をDBに保存
+			if err := db.UpdateFullTransactionInTx(tx, &recCopy); err != nil {
+				log.Printf("Failed to reprocess transaction ID %d: %v", record.ID, err)
+				continue
+			}
+			updatedCount++
+		}
+
+		if err := tx.Commit(); err != nil {
+			http.Error(w, "Failed to commit transaction", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{
+			"message": fmt.Sprintf("%d件の取引データを更新しました。", updatedCount),
+		})
+	}
+}
+
+
+----- C:\Dev\KARASHI\units\handler.go -----
+// File: units/handler.go
+package units
+
+import (
+	"encoding/json"
+	"net/http"
+)
+
+// GetTaniMapHandlerは、ロード済みの単位マップを返します。
+func GetTaniMapHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if internalMap == nil {
+			json.NewEncoder(w).Encode(make(map[string]string))
+			return
+		}
+		json.NewEncoder(w).Encode(internalMap)
 	}
 }
 
@@ -4770,7 +5459,7 @@ func ParseUsage(r io.Reader) ([]model.UnifiedInputRecord, error) {
 
 
 ----- C:\Dev\KARASHI\main.go -----
-// File: main.go (Corrected)
+// File: main.go
 package main
 
 import (
@@ -4786,7 +5475,7 @@ import (
 	"karashi/masteredit"
 	"karashi/transaction"
 	"karashi/units"
-	"karashi/updatemaster" // ★ ADD THIS IMPORT
+	"karashi/updatemaster"
 	"karashi/usage"
 	"log"
 	"net/http"
@@ -4801,34 +5490,26 @@ import (
 
 func findInvalidCharacters(conn *sql.DB) {
 	fmt.Println("--- Shift_JIS変換チェックを開始します ---")
-
-	// 製品マスターをチェック
 	products, err := db.GetAllProductMasters(conn)
 	if err != nil {
 		log.Fatalf("製品マスターの取得に失敗: %v", err)
 	}
-
 	for _, p := range products {
 		checkAndReport("製品マスター", p.ProductCode, "製品名", p.ProductName)
 		checkAndReport("製品マスター", p.ProductCode, "カナ名", p.KanaName)
 		checkAndReport("製品マスター", p.ProductCode, "メーカー名", p.MakerName)
 		checkAndReport("製品マスター", p.ProductCode, "包装", p.PackageSpec)
 	}
-
-	// 得意先マスターをチェック
 	clients, err := db.GetAllClients(conn)
 	if err != nil {
 		log.Fatalf("得意先マスターの取得に失敗: %v", err)
 	}
-
 	for _, c := range clients {
 		checkAndReport("得意先マスター", c.Code, "得意先名", c.Name)
 	}
-
 	fmt.Println("--- チェックが完了しました ---")
 }
 
-// Shift_JISに変換できるかチェックし、失敗したらレポートするヘルパー関数
 func checkAndReport(table, code, field, value string) {
 	encoder := japanese.ShiftJIS.NewEncoder()
 	_, _, err := transform.String(encoder, value)
@@ -4836,8 +5517,6 @@ func checkAndReport(table, code, field, value string) {
 		fmt.Printf("【エラー】 テーブル「%s」のレコード「%s」の項目「%s」に変換できない文字が含まれています。\n  -> 値: %s\n", table, code, field, value)
 	}
 }
-
-// ▲▲▲ 診断コード ▲▲▲
 
 func main() {
 	conn, err := sql.Open("sqlite3", "yamato.db")
@@ -4854,7 +5533,7 @@ func main() {
 	}
 	log.Println("master init complete")
 
-	findInvalidCharacters(conn) // ★この行を追加
+	findInvalidCharacters(conn)
 
 	mux := http.NewServeMux()
 
@@ -4903,8 +5582,10 @@ func main() {
 	mux.HandleFunc("/api/products/export", backup.ExportProductsHandler(conn))
 	mux.HandleFunc("/api/products/import", backup.ImportProductsHandler(conn))
 	mux.HandleFunc("/api/aggregation", aggregation.GetAggregationHandler(conn))
+	mux.HandleFunc("/api/transactions/reprocess", transaction.ReProcessTransactionsHandler(conn))
 
 	// Static file and root handler
+	// ▼▼▼ 修正点: "http.dir" を "http.Dir" に修正 ▼▼▼
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("./static"))))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		http.ServeFile(w, r, "./static/index.html")

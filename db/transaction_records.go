@@ -1,4 +1,4 @@
-// File: db/transaction_records.go (Corrected)
+// File: db/transaction_records.go
 package db
 
 import (
@@ -8,7 +8,6 @@ import (
 	"log"
 )
 
-// ★★★ EXPORTED by capitalizing the first letter ★★★
 const TransactionColumns = `
     id, transaction_date, client_code, receipt_number, line_number, flag,
     jan_code, yj_code, product_name, kana_name, package_form, package_spec, maker_name,
@@ -18,7 +17,6 @@ const TransactionColumns = `
     flag_deleterious, flag_narcotic, flag_psychotropic, flag_stimulant,
     flag_stimulant_raw, process_flag_ma, processing_status`
 
-// ★★★ EXPORTED by capitalizing the first letter ★★★
 func ScanTransactionRecord(row interface{ Scan(...interface{}) error }) (*model.TransactionRecord, error) {
 	var r model.TransactionRecord
 	if err := row.Scan(
@@ -35,22 +33,6 @@ func ScanTransactionRecord(row interface{ Scan(...interface{}) error }) (*model.
 	return &r, nil
 }
 
-// PersistTransactionRecords starts a new transaction to save records.
-func PersistTransactionRecords(conn *sql.DB, records []model.TransactionRecord) error {
-	tx, err := conn.Begin()
-	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %w", err)
-	}
-	defer tx.Rollback()
-
-	if err := PersistTransactionRecordsInTx(tx, records); err != nil {
-		return err
-	}
-
-	return tx.Commit()
-}
-
-// PersistTransactionRecordsInTx saves records within an existing transaction.
 func PersistTransactionRecordsInTx(tx *sql.Tx, records []model.TransactionRecord) error {
 	const q = `
 INSERT OR REPLACE INTO transaction_records (
@@ -89,9 +71,15 @@ INSERT OR REPLACE INTO transaction_records (
 	return nil
 }
 
-// GetReceiptNumbersByDate returns a list of receipt numbers for a given date.
+// ★★★ 修正点: クエリに `AND (flag = 11 OR flag = 12)` を追加 ★★★
 func GetReceiptNumbersByDate(conn *sql.DB, date string) ([]string, error) {
-	rows, err := conn.Query("SELECT DISTINCT receipt_number FROM transaction_records WHERE transaction_date = ? ORDER BY receipt_number", date)
+	const q = `
+		SELECT DISTINCT receipt_number 
+		FROM transaction_records 
+		WHERE transaction_date = ? AND (flag = 11 OR flag = 12) 
+		ORDER BY receipt_number`
+
+	rows, err := conn.Query(q, date)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get receipt numbers by date: %w", err)
 	}
@@ -108,7 +96,6 @@ func GetReceiptNumbersByDate(conn *sql.DB, date string) ([]string, error) {
 	return numbers, nil
 }
 
-// GetTransactionsByReceiptNumber returns all details for a given receipt number.
 func GetTransactionsByReceiptNumber(conn *sql.DB, receiptNumber string) ([]model.TransactionRecord, error) {
 	q := `SELECT ` + TransactionColumns + ` FROM transaction_records WHERE receipt_number = ? ORDER BY line_number`
 
@@ -129,23 +116,63 @@ func GetTransactionsByReceiptNumber(conn *sql.DB, receiptNumber string) ([]model
 	return records, nil
 }
 
-// DeleteTransactionsByReceiptNumberInTx deletes all records for a given receipt number within a transaction.
 func DeleteTransactionsByReceiptNumberInTx(tx *sql.Tx, receiptNumber string) error {
 	const q = `DELETE FROM transaction_records WHERE receipt_number = ?`
-
 	result, err := tx.Exec(q, receiptNumber)
 	if err != nil {
 		return fmt.Errorf("failed to delete transactions for receipt %s: %w", receiptNumber, err)
 	}
-
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
 		return fmt.Errorf("failed to get rows affected for receipt %s: %w", receiptNumber, err)
 	}
-
 	if rowsAffected == 0 {
 		return fmt.Errorf("no transaction found with receipt number: %s", receiptNumber)
 	}
+	return nil
+}
 
+func GetProvisionalTransactions(conn *sql.DB) ([]model.TransactionRecord, error) {
+	q := `SELECT ` + TransactionColumns + ` FROM transaction_records WHERE processing_status = 'provisional'`
+	rows, err := conn.Query(q)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get provisional transactions: %w", err)
+	}
+	defer rows.Close()
+
+	var records []model.TransactionRecord
+	for rows.Next() {
+		r, err := ScanTransactionRecord(rows)
+		if err != nil {
+			return nil, err
+		}
+		records = append(records, *r)
+	}
+	return records, nil
+}
+
+func UpdateFullTransactionInTx(tx *sql.Tx, record *model.TransactionRecord) error {
+	const q = `
+		UPDATE transaction_records SET
+			yj_code = ?, product_name = ?, kana_name = ?, package_form = ?, package_spec = ?, maker_name = ?,
+			jan_pack_inner_qty = ?, jan_pack_unit_qty = ?, jan_unit_name = ?, jan_unit_code = ?,
+			yj_pack_unit_qty = ?, yj_unit_name = ?,
+			flag_poison = ?, flag_deleterious = ?, flag_narcotic = ?, flag_psychotropic = ?,
+			flag_stimulant = ?, flag_stimulant_raw = ?,
+			process_flag_ma = ?, processing_status = ?
+		WHERE id = ?`
+
+	_, err := tx.Exec(q,
+		record.YjCode, record.ProductName, record.KanaName, record.PackageForm, record.PackageSpec, record.MakerName,
+		record.JanPackInnerQty, record.JanPackUnitQty, record.JanUnitName, record.JanUnitCode,
+		record.YjPackUnitQty, record.YjUnitName,
+		record.FlagPoison, record.FlagDeleterious, record.FlagNarcotic, record.FlagPsychotropic,
+		record.FlagStimulant, record.FlagStimulantRaw,
+		record.ProcessFlagMA, record.ProcessingStatus,
+		record.ID,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to update transaction ID %d: %w", record.ID, err)
+	}
 	return nil
 }

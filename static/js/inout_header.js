@@ -1,13 +1,11 @@
-// File: static/js/inout_header.js (Corrected)
+// File: static/js/inout_header.js
 import { setupDateDropdown, setupClientDropdown } from './common_table.js';
 
 const NEW_ENTRY_VALUE = '--new--';
 
 let clientSelect, receiptSelect, saveBtn, deleteBtn, headerDateInput, headerTypeSelect;
-
 let newClientName = null;
-let currentLoadedReceipt = null; // Variable to track the loaded slip
-
+let currentLoadedReceipt = null;
 
 async function initializeClientDropdown() {
     clientSelect.innerHTML = `<option value="">選択してください</option>`;
@@ -19,7 +17,6 @@ async function initializeClientDropdown() {
     clientSelect.appendChild(newOption);
 }
 
-// ▼▼▼ 修正点: リセット関数をエクスポート ▼▼▼
 export function resetHeader() {
     if (!clientSelect || !headerDateInput) return;
     setupDateDropdown(headerDateInput);
@@ -49,7 +46,7 @@ export async function initHeader(getDetailsData, clearDetailsTable, populateDeta
     setupDateDropdown(headerDateInput);
     await initializeClientDropdown();
     receiptSelect.innerHTML = `
-        <option value="">日付を選択してください</option>
+        <option value="">選択してください</option>
         <option value="${NEW_ENTRY_VALUE}">--- 新規作成 ---</option>
     `;
     
@@ -109,15 +106,16 @@ export async function initHeader(getDetailsData, clearDetailsTable, populateDeta
 
         if (selectedValue === NEW_ENTRY_VALUE || selectedValue === "") {
             clearDetailsTable();
-            currentLoadedReceipt = null; // Clear loaded receipt state
+            currentLoadedReceipt = null;
         } else {
+            window.showLoading();
             try {
                 const res = await fetch(`/api/transaction/${selectedValue}`);
                 if (!res.ok) throw new Error('明細の読込に失敗');
                 const records = await res.json();
 
                 if (records && records.length > 0) {
-                    currentLoadedReceipt = selectedValue; // Set the loaded receipt number
+                    currentLoadedReceipt = selectedValue;
                     const clientCode = records[0].clientCode;
                     clientSelect.value = clientCode;
                     newClientName = null;
@@ -126,7 +124,9 @@ export async function initHeader(getDetailsData, clearDetailsTable, populateDeta
                 populateDetailsTable(records);
             } catch (err) {
                 console.error(err);
-                alert(err.message);
+                window.showNotification(err.message, 'error');
+            } finally {
+                window.hideLoading();
             }
         }
     });
@@ -142,14 +142,14 @@ export async function initHeader(getDetailsData, clearDetailsTable, populateDeta
             clientCode = '';
         } else {
             if (!clientCode || clientCode === NEW_ENTRY_VALUE) {
-                alert('得意先を選択または新規作成してください。');
+                window.showNotification('得意先を選択または新規作成してください。', 'error');
                 return;
             }
         }
         
         const records = getDetailsData();
         if (records.length === 0) {
-            alert('保存する明細データがありません。');
+            window.showNotification('保存する明細データがありません。', 'error');
             return;
         }
         
@@ -160,8 +160,10 @@ export async function initHeader(getDetailsData, clearDetailsTable, populateDeta
             transactionDate: headerDateInput.value.replace(/-/g, ''),
             transactionType: headerTypeSelect.value,
             records: records,
-            originalReceiptNumber: currentLoadedReceipt // Send the original receipt number
+            originalReceiptNumber: currentLoadedReceipt
         };
+        
+        window.showLoading();
 
         try {
             const res = await fetch('/api/inout/save', {
@@ -175,33 +177,31 @@ export async function initHeader(getDetailsData, clearDetailsTable, populateDeta
                 throw new Error(resData.message || `保存に失敗しました (HTTP ${res.status})`);
             }
 
-            alert(`データを保存しました。\n伝票番号: ${resData.receiptNumber}`);
+            window.showNotification(`データを保存しました。\n伝票番号: ${resData.receiptNumber}`, 'success');
             
-            // Reset UI
+            resetHeader();
             clearDetailsTable();
-            await initializeClientDropdown();
-            newClientName = null;
-            currentLoadedReceipt = null;
-            headerDateInput.dispatchEvent(new Event('change'));
-            receiptSelect.value = NEW_ENTRY_VALUE;
-            deleteBtn.disabled = true;
 
         } catch (err) {
             console.error(err);
-            alert(err.message);
+            window.showNotification(err.message, 'error');
+        } finally {
+            window.hideLoading();
         }
     });
 
     deleteBtn.addEventListener('click', async () => {
         const receiptNumber = receiptSelect.value;
         if (!receiptNumber || receiptNumber === NEW_ENTRY_VALUE) {
-            alert("削除対象の伝票が選択されていません。");
+            window.showNotification("削除対象の伝票が選択されていません。", 'error');
             return;
         }
 
         if (!confirm(`伝票番号 [${receiptNumber}] を完全に削除します。よろしいですか？`)) {
             return;
         }
+        
+        window.showLoading();
 
         try {
             const res = await fetch(`/api/transaction/delete/${receiptNumber}`, {
@@ -213,21 +213,16 @@ export async function initHeader(getDetailsData, clearDetailsTable, populateDeta
                 throw new Error(errData?.message || '削除に失敗しました。');
             }
 
-            alert(`伝票 [${receiptNumber}] を削除しました。`);
+            window.showNotification(`伝票 [${receiptNumber}] を削除しました。`, 'success');
             
+            resetHeader();
             clearDetailsTable();
-            await initializeClientDropdown();
-            receiptSelect.innerHTML = `
-                <option value="">日付を選択してください</option>
-                <option value="${NEW_ENTRY_VALUE}" selected>--- 新規作成 ---</option>
-            `;
-            newClientName = null;
-            deleteBtn.disabled = true;
-            headerDateInput.dispatchEvent(new Event('change'));
 
         } catch(err) {
             console.error(err);
-            alert(err.message);
+            window.showNotification(err.message, 'error');
+        } finally {
+            window.hideLoading();
         }
     });
 

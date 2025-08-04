@@ -32,24 +32,50 @@ th {
 .hidden { display: none !important; }
 
 /* --- ページ構成 --- */
+/* ★★★ 修正点: ヘッダーをスティッキー(固定)に ★★★ */
 header {
     display: flex;
+    flex-wrap: wrap; /* ボタンが多いため折り返しを許可 */
     align-items: center;
     gap: 10px;
-    padding-bottom: 10px;
+    padding: 10px;
     border-bottom: 1px solid #000000;
     margin-bottom: 10px;
+    background-color: #ffffff; /* スクロール時に下が透けないように */
+    position: sticky;
+    top: 0;
+    z-index: 1000; /* 他の要素より手前に表示 */
 }
+
+/* ★★★ 修正点: ボタンのスタイルを調整 ★★★ */
 .btn {
     font-size: 14px;
     padding: 8px 16px;
-    background-color: #ffffff;
+    background-color: #f0f0f0; /* 通常時の色を少しグレーに */
     border: 1px solid #000000;
-    cursor: pointer;
+    cursor: default; /* カーソルを通常の矢印に */
+    transition: background-color 0.2s; /* 色が滑らかに変わるように */
 }
 .btn:hover {
-    background-color: #f0f0f0;
+    background-color: #dcdcdc; /* マウスオーバー時の色 */
 }
+.btn:active {
+    background-color: #cccccc; /* クリック時の色 */
+}
+/* ★★★ 追加: 選択中のボタンのスタイル ★★★ */
+.btn.active {
+    background-color: #a9a9a9; /* 選択中の色 */
+    font-weight: bold;
+    color: #000;
+}
+/* ★★★ 追加: ローディング中のボタンスタイル ★★★ */
+.btn.loading {
+    background-color: #cccccc;
+    color: #666;
+    cursor: not-allowed;
+}
+
+
 .table-container {
     overflow-x: auto;
     margin-bottom: 20px;
@@ -62,15 +88,8 @@ header {
     justify-content: space-between;
     margin-bottom: 20px;
 }
-.in-out-header h1 {
-    font-size: 24px;
-}
 .section {
     margin-bottom: 20px;
-}
-.section h2 {
-    font-size: 18px;
-    margin-bottom: 10px;
 }
 .controller-table select, .controller-table input {
     width: 100%;
@@ -91,6 +110,7 @@ header {
     display: flex;
     align-items: center;
     justify-content: center;
+    z-index: 2000;
 }
 .modal-content {
     background-color: #ffffff;
@@ -117,43 +137,38 @@ header {
     font-size: 24px;
     border: none;
     background: none;
-    cursor: pointer;
+    cursor: default;
 }
 
-/* --- 集計結果の新しいスタイル (画面表示用) --- */
+/* --- 集計結果のスタイル --- */
 .aggregation-group-table {
     width: 100%;
     border-collapse: collapse;
-    margin-bottom: 20px; /* グループ間の余白 */
+    margin-bottom: 20px;
     border: 1px solid #ccc;
 }
-
 .aggregation-group-table > thead > tr > th {
     background-color: #f8f9fa;
     padding: 10px;
     text-align: left;
     border-bottom: 2px solid #ccc;
 }
-
 .aggregation-group-table .agg-header-line1 {
     font-weight: bold;
     font-size: 16px;
     color: #212529;
     margin-bottom: 5px;
 }
-
 .aggregation-group-table .agg-header-line2 {
     font-size: 14px;
     color: #495057;
     padding-left: 10px;
 }
-
 .aggregation-group-table .details-header th {
     background-color: #e9ecef;
     font-weight: bold;
     text-align: center;
 }
-
 .aggregation-group-table td, 
 .aggregation-group-table th {
     border: 1px solid #ccc;
@@ -161,26 +176,125 @@ header {
     vertical-align: middle;
 }
 
+/* ★★★ 修正点: 集計フィルターのレイアウトをFlexboxで整列 ★★★ */
+.filter-container {
+    border: 1px solid #ccc;
+    padding: 15px;
+    margin-bottom: 20px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 20px;
+    align-items: flex-end; /* 要素の下端を揃える */
+}
+.filter-group {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+}
+.filter-group-checkbox {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px 15px;
+    align-items: center;
+    border: 1px solid #eee;
+    padding: 5px 10px;
+}
+.no-movement-label {
+    border-left: 2px solid #999;
+    padding-left: 15px;
+}
+.filter-group-buttons {
+    margin-left: auto; /* ボタンを右端に寄せる */
+}
 
-/* File: static/css/styles.css (@media print ブロックの全体) */
+
+/* ★★★ 追加: ローディング表示のスタイル ★★★ */
+#loading-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(255, 255, 255, 0.8);
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    z-index: 9999;
+}
+.spinner {
+    border: 8px solid #f3f3f3;
+    border-top: 8px solid #3498db;
+    border-radius: 50%;
+    width: 60px;
+    height: 60px;
+    animation: spin 1s linear infinite;
+    margin-bottom: 20px;
+}
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+/* ★★★ 追加: 通知ボックスのスタイル ★★★ */
+#notification-box {
+    position: fixed;
+    top: 80px; /* ヘッダーの下に表示 */
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 15px 25px;
+    border-radius: 5px;
+    color: white;
+    font-size: 16px;
+    z-index: 10000;
+    opacity: 0;
+    transition: opacity 0.5s, top 0.5s;
+}
+#notification-box.show {
+    opacity: 1;
+    top: 90px;
+}
+#notification-box.success {
+    background-color: #28a745;
+}
+#notification-box.error {
+    background-color: #dc3545;
+}
+
+/* ★★★ 追加: トップへ戻るボタンのスタイル ★★★ */
+#back-to-top {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    width: 50px;
+    height: 50px;
+    background-color: #555;
+    color: white;
+    border: none;
+    border-radius: 50%;
+    text-align: center;
+    font-size: 24px;
+    line-height: 50px;
+    cursor: default;
+    z-index: 1000;
+}
+#back-to-top:hover {
+    background-color: #333;
+}
+
 
 /* --- 印刷専用スタイル --- */
 @media print {
-    /* 用紙設定 (A4縦、余白を縮小) */
     @page {
         size: A4 portrait;
-        margin: 10mm;
+        margin: 5mm;
     }
-
-    /* 印刷したくない要素をすべて非表示に */
     body > header,
     body > main > div:not(#aggregation-view),
-    #aggregation-view .in-out-header,
-    #aggregation-view .filter-container {
+    #aggregation-view .filter-container,
+    .btn {
         display: none !important;
     }
-
-    /* 印刷コンテナを画面全体に広げる */
     body, main, #aggregation-view, #aggregation-output-container {
         display: block !important;
         width: 100% !important;
@@ -189,46 +303,43 @@ header {
         border: none !important;
         box-shadow: none !important;
         background: none !important;
+        color: #000 !important;
     }
-    
-    /* 繰り返しヘッダーの指定 */
     .aggregation-group-table thead.repeating-header {
         display: table-header-group;
     }
-
-    /* グループ全体のテーブルスタイル (グループ間の余白を縮小) */
     .aggregation-group-table {
         page-break-inside: avoid;
-        margin-bottom: 3mm;
+        margin-bottom: 1mm;
         width: 100%;
         border-collapse: collapse;
     }
-    
-    /* 繰り返しヘッダーのスタイル (余白を縮小) */
     .repeating-header th {
         border: none;
-        padding: 0 0 2px 0;
+        padding: 0 0 1px 0;
         text-align: left;
-        border-bottom: 2px solid #000;
+        border-bottom: 1px solid #000;
     }
-
-    /* ヘッダー内の文字の行間を縮小 */
-    .agg-header-line1, .agg-header-line2 {
-        line-height: 1.2;
+    .agg-header-line1 {
+        font-size: 8pt;
+        font-weight: bold;
+        line-height: 1.1;
     }
-
-    /* 明細行のセルスタイル (余白と行間を縮小) */
+    .agg-header-line2 {
+        font-size: 7pt;
+        line-height: 1.1;
+        padding-left: 0;
+    }
     .aggregation-group-table td,
     .aggregation-group-table .details-header th {
-        font-size: 9pt;
-        border: 1px solid #666;
-        padding: 2px 3px;
-        line-height: 1.15;
+        font-size: 7pt;
+        border: 1px solid #888;
+        padding: 1px 2px;
+        line-height: 1.1;
+        white-space: nowrap;
     }
-    
-    /* 背景色を強制的に印刷 (警告が出ていた箇所の修正版) */
     .details-header th {
-        background-color: #e9ecef !important;
+        background-color: #f0f0f0 !important;
         -webkit-print-color-adjust: exact;
         print-color-adjust: exact;
     }

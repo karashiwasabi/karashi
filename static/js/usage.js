@@ -1,11 +1,10 @@
-// File: static/js/usage.js (最終修正版)
+// File: static/js/usage.js
 import { createUploadTableHTML, renderUploadTableRows } from './common_table.js';
 
 const usageBtn = document.getElementById('usageBtn');
 const usageInput = document.getElementById('usageFileInput');
 const uploadContainer = document.getElementById('upload-output-container');
 
-// ▼▼▼ 修正点: リセット関数をエクスポート ▼▼▼
 export function resetUsageUploadView() {
     uploadContainer.innerHTML = createUploadTableHTML('upload-output-table');
 }
@@ -13,9 +12,10 @@ export function resetUsageUploadView() {
 export function initUsageUpload() {
     if(!usageBtn || !usageInput || !uploadContainer) return;
 
-    usageBtn.addEventListener('click', () => {
-        usageInput.click();
-    });
+    // ★★★ 修正点: このファイル内のクリックイベントリスナーを削除 ★★★
+    // usageBtn.addEventListener('click', () => {
+    //     usageInput.click();
+    // });
 
     usageInput.addEventListener('change', async e => {
         if (!e.target.files.length) return;

@@ -1,4 +1,16 @@
-// File: static/js/common_table.js (修正版)
+// File: static/js/common_table.js
+
+// ★★★ 修正点: 全てのフラグに対応するマップを作成し、エクスポート ★★★
+export const transactionTypeMap = {
+    1: "納品",
+    2: "返品",
+    3: "処方",
+    4: "棚卸増",
+    5: "棚卸減",
+    11: "入庫",
+    12: "出庫",
+};
+
 
 /**
  * アップロード結果表示用テーブルの HTML を生成
@@ -44,13 +56,15 @@ export function renderUploadTableRows(tableId, records) {
     tbody.innerHTML = `<tr><td colspan="14">対象データがありません。</td></tr>`;
     return;
   }
-  const flagMap = {1: "納", 2: "返", 3: "処"};
+  
+  // ★★★ 修正点: 古いflagMapを削除 ★★★
+  
   let html = "";
   records.forEach(rec => {
     html += `
       <tr>
         <td rowspan="2">${rec.transactionDate || ""}</td>
-        <td rowspan="2">${flagMap[rec.flag] || ""}</td>
+        <td rowspan="2">${transactionTypeMap[rec.flag] || ""}</td>
         <td>${rec.yjCode || ""}</td>
         <td class="left" colspan="2">${rec.productName || ""}</td>
         <td class="right" rowspan="2">${rec.datQuantity?.toFixed(2) || ""}</td>
@@ -94,8 +108,8 @@ export function setupDateDropdown(inputEl) {
 export async function setupClientDropdown(selectEl) {
   if (!selectEl) return;
   
-  // 既存の選択肢をクリア（先頭の「選択してください」などは残す）
-  const preservedOptions = Array.from(selectEl.querySelectorAll('option[value=""], option[value="--new--"]'));
+  // 「選択してください」のみ保持する
+  const preservedOptions = Array.from(selectEl.querySelectorAll('option[value=""]'));
   selectEl.innerHTML = '';
   preservedOptions.forEach(opt => selectEl.appendChild(opt));
 

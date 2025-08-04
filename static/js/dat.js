@@ -1,11 +1,10 @@
-// File: static/js/dat.js (最終修正版)
+// File: static/js/dat.js
 import { createUploadTableHTML, renderUploadTableRows } from './common_table.js';
 
 const datBtn = document.getElementById('datBtn');
 const datInput = document.getElementById('datFileInput');
 const uploadContainer = document.getElementById('upload-output-container');
 
-// ▼▼▼ 修正点: リセット関数をエクスポート ▼▼▼
 export function resetDatUploadView() {
     uploadContainer.innerHTML = createUploadTableHTML('upload-output-table');
 }
@@ -13,10 +12,10 @@ export function resetDatUploadView() {
 export function initDatUpload() {
     if (!datBtn || !datInput || !uploadContainer) return;
 
-    // クリック時のリセット処理とファイル選択ダイアログの表示
-    datBtn.addEventListener('click', () => {
-        datInput.click();
-    });
+    // ★★★ 修正点: このファイル内のクリックイベントリスナーを削除 ★★★
+    // datBtn.addEventListener('click', () => {
+    //     datInput.click();
+    // });
 
     datInput.addEventListener('change', async e => {
         if (!e.target.files.length) return;

@@ -1,4 +1,4 @@
-// File: inout/handler.go (修正版)
+// File: inout/handler.go
 package inout
 
 import (
@@ -97,7 +97,8 @@ func SaveInOutHandler(conn *sql.DB) http.HandlerFunc {
 		}
 
 		// --- レコード保存 ---
-		flagMap := map[string]int{"入庫": 1, "出庫": 2}
+		// ★★★ 修正点: フラグの値を変更 (入庫: 11, 出庫: 12) ★★★
+		flagMap := map[string]int{"入庫": 11, "出庫": 12}
 		flag := flagMap[payload.TransactionType]
 
 		for i := range payload.Records {
@@ -120,7 +121,7 @@ func SaveInOutHandler(conn *sql.DB) http.HandlerFunc {
 						ProductCode:      rec.JanCode,
 						YjCode:           rec.YjCode,
 						ProductName:      rec.ProductName,
-						Origin:           "JCSHMS", // ★★★ ここを "MANUAL_ENTRY" から "JCSHMS" に修正 ★★★
+						Origin:           "JCSHMS",
 						KanaName:         rec.KanaName,
 						MakerName:        rec.MakerName,
 						PackageSpec:      rec.PackageForm,
