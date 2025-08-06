@@ -5,6 +5,7 @@ import (
 	"encoding/csv"
 	"fmt"
 	"io"
+	"karashi/model"
 	"strconv"
 	"strings"
 
@@ -12,29 +13,25 @@ import (
 	"golang.org/x/text/transform"
 )
 
-// FileRowはファイルから読み込んだ行の構造体です
-type FileRow struct {
-	ProductName    string
-	YjUnitName     string
-	InnerPackQty   float64
-	PhysicalJanQty float64
-	YjCode         string
-	JanCode        string
+// ParsedInventoryDataはファイル全体の構造体です
+type ParsedInventoryData struct {
+	Date    string
+	Records []model.UnifiedInputRecord
 }
 
-// ParsedInventoryFileはファイル全体の構造体です
-type ParsedInventoryFile struct {
-	Date string
-	Rows []FileRow
+// trimQuotesは文字列から空白とシングルクォートを除去します
+func trimQuotes(s string) string {
+	return strings.Trim(strings.TrimSpace(s), "'")
 }
 
-// ParseInventoryFileは新しい形式の棚卸ファイルを解析します
-func ParseInventoryFile(r io.Reader) (*ParsedInventoryFile, error) {
-	reader := csv.NewReader(transform.NewReader(r, japanese.ShiftJIS.NewDecoder()))
-	reader.FieldsPerRecord = -1 // 可変長カラムに対応
+// ParseInventoryFileは棚卸ファイルを解析し、UnifiedInputRecordのスライスを返します
+func ParseInventoryFile(r io.Reader) (*ParsedInventoryData, error) {
+	decoder := japanese.ShiftJIS.NewDecoder()
+	reader := csv.NewReader(transform.NewReader(r, decoder))
+	reader.FieldsPerRecord = -1
 
-	var result ParsedInventoryFile
-	var dataRows []FileRow
+	var result ParsedInventoryData
+	var dataRecords []model.UnifiedInputRecord
 
 	records, err := reader.ReadAll()
 	if err != nil {
@@ -50,24 +47,24 @@ func ParseInventoryFile(r io.Reader) (*ParsedInventoryFile, error) {
 		switch rowType {
 		case "H":
 			if len(row) > 4 {
-				result.Date = strings.TrimSpace(row[4])
+				result.Date = trimQuotes(row[4])
 			}
 		case "R1":
 			if len(row) > 45 {
 				innerPackQty, _ := strconv.ParseFloat(strings.TrimSpace(row[17]), 64)
 				physicalJanQty, _ := strconv.ParseFloat(strings.TrimSpace(row[21]), 64)
 
-				dataRows = append(dataRows, FileRow{
-					ProductName:    strings.TrimSpace(row[12]),
-					YjUnitName:     strings.TrimSpace(row[16]),
-					InnerPackQty:   innerPackQty,
-					PhysicalJanQty: physicalJanQty,
-					YjCode:         strings.TrimSpace(row[42]),
-					JanCode:        strings.TrimSpace(row[45]),
+				dataRecords = append(dataRecords, model.UnifiedInputRecord{
+					ProductName:     trimQuotes(row[12]),
+					YjUnitName:      trimQuotes(row[16]),
+					JanPackInnerQty: innerPackQty,   // 18列目を格納
+					JanQuantity:     physicalJanQty, // 22列目を格納
+					YjCode:          trimQuotes(row[42]),
+					JanCode:         trimQuotes(row[45]),
 				})
 			}
 		}
 	}
-	result.Rows = dataRows
+	result.Records = dataRecords
 	return &result, nil
 }

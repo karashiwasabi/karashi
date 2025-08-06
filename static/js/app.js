@@ -7,6 +7,9 @@ import { initMasterEdit, resetMasterEditView } from './master_edit.js';
 import { initAggregation, resetAggregationView } from './aggregation.js';
 import { initUpdateMaster } from './update_master.js';
 import { initReprocessButton } from './reprocess.js';
+import { initInventoryView, resetInventoryView } from './inventory.js';
+// ▼▼▼ 以下を追記 ▼▼▼
+import { initMonthEndView, resetMonthEndView } from './month_end.js';
 
 // --- グローバルUI要素の管理 ---
 const loadingOverlay = document.getElementById('loading-overlay');
@@ -15,7 +18,6 @@ const backToTopBtn = document.getElementById('back-to-top');
 
 window.showLoading = () => loadingOverlay.classList.remove('hidden');
 window.hideLoading = () => loadingOverlay.classList.add('hidden');
-
 window.showNotification = (message, type = 'success') => {
     notificationBox.textContent = message;
     notificationBox.className = 'hidden';
@@ -27,7 +29,6 @@ window.showNotification = (message, type = 'success') => {
     }, 3000);
 };
 
-
 document.addEventListener('DOMContentLoaded', () => {
   // --- 初期化フラグ ---
   let isDatInitialized = false;
@@ -35,7 +36,10 @@ document.addEventListener('DOMContentLoaded', () => {
   let isInOutInitialized = false;
   let isMasterEditInitialized = false;
   let isAggregationInitialized = false;
-  
+  let isInventoryInitialized = false;
+  let isMonthEndInitialized = false; // ▼▼▼ 追記
+  let isSampleInitialized = false;
+
   // --- 状態管理 ---
   let lastClickedButtonId = null;
 
@@ -54,6 +58,9 @@ document.addEventListener('DOMContentLoaded', () => {
       'datBtn': 'upload-view',
       'usageBtn': 'upload-view',
       'aggregationBtn': 'aggregation-view',
+      'monthEndViewBtn': 'month-end-view', // ▼▼▼ 追記
+      'inventoryBtn': 'inventory-view',
+      'sampleBtn': 'sample-view',
   };
 
   /**
@@ -64,22 +71,30 @@ document.addEventListener('DOMContentLoaded', () => {
     const targetViewId = viewMap[buttonId];
     if (!targetViewId) return;
 
-    // 1. ボタンのアクティブ状態を更新 (最後に押されたボタンのみ)
+    // 1. 全てのボタンを非アクティブ化
     menuButtons.forEach(btn => {
-        if (viewMap[btn.id]) {
-            btn.classList.toggle('active', btn.id === buttonId);
-        }
+        btn.classList.remove('active');
     });
+    // 2. クリックされたボタンのみアクティブ化
+    const clickedButton = document.getElementById(buttonId);
+    if (clickedButton) {
+        clickedButton.classList.add('active');
+    }
 
-    // 2. ビューの表示/非表示を切り替え
+    // 3. 全てのビューを非表示
     allViews.forEach(v => {
-        v.classList.toggle('hidden', v.id !== targetViewId);
+        v.classList.add('hidden');
     });
-    
-    // 3. 各ビューの初期化/リセット処理
+    // 4. 対象のビューのみ表示
+    const targetView = document.getElementById(targetViewId);
+    if(targetView) {
+        targetView.classList.remove('hidden');
+    }
+
+    // 5. 各ビューの初期化/リセット処理
     switch (targetViewId) {
         case 'in-out-view':
-            if (!isInOutInitialized) { initInOut(); isInOutInitialized = true; } 
+            if (!isInOutInitialized) { initInOut(); isInOutInitialized = true; }
             else { resetInOutView(); }
             break;
         case 'master-edit-view':
@@ -89,6 +104,23 @@ document.addEventListener('DOMContentLoaded', () => {
         case 'aggregation-view':
             if (!isAggregationInitialized) { initAggregation(); isAggregationInitialized = true; }
             else { resetAggregationView(); }
+            break;
+        case 'inventory-view':
+            if (!isInventoryInitialized) { initInventoryView(); isInventoryInitialized = true; }
+            else { resetInventoryView(); }
+            document.getElementById('inventoryFileInput').click();
+            break;
+        case 'month-end-view': // ▼▼▼ 追記
+            if (!isMonthEndInitialized) { initMonthEndView(); isMonthEndInitialized = true; }
+            resetMonthEndView();
+            break;
+        case 'sample-view':
+            if (!isSampleInitialized) {
+                if (targetView) {
+                    targetView.innerHTML = '<p style="padding: 20px; font-size: 18px;">サンプル</p>';
+                }
+                isSampleInitialized = true;
+            }
             break;
         case 'upload-view':
             if (buttonId === 'datBtn') {
@@ -103,12 +135,15 @@ document.addEventListener('DOMContentLoaded', () => {
             break;
     }
   }
-  
+
   // --- イベントリスナー ---
   mainHeader.addEventListener('click', (e) => {
-    if (e.target.matches('.btn') && viewMap[e.target.id]) {
-        lastClickedButtonId = e.target.id;
-        switchView(lastClickedButtonId);
+    const button = e.target;
+    if (button.matches('.btn')) {
+        if (viewMap[button.id]) {
+            lastClickedButtonId = button.id;
+            switchView(lastClickedButtonId);
+        }
     }
   });
 
@@ -123,7 +158,7 @@ document.addEventListener('DOMContentLoaded', () => {
   backToTopBtn.addEventListener('click', () => {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   });
-  
+
   // --- 初期表示 ---
   lastClickedButtonId = 'inOutViewBtn';
   switchView(lastClickedButtonId);

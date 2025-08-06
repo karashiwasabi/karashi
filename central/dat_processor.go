@@ -20,10 +20,12 @@ func ProcessDatRecords(tx *sql.Tx, conn *sql.DB, records []model.UnifiedInputRec
 		if rec.JanCode != "" && rec.JanCode != "0000000000000" {
 			janSet[rec.JanCode] = struct{}{}
 		}
+		// ▼▼▼ キー生成ロジックを修正 ▼▼▼
 		key := rec.JanCode
-		if key == "0000000000000" {
+		if key == "" || key == "0000000000000" {
 			key = fmt.Sprintf("9999999999999%s", rec.ProductName)
 		}
+		// ▲▲▲
 		if key != "" {
 			keySet[key] = struct{}{}
 		}
@@ -55,10 +57,14 @@ func ProcessDatRecords(tx *sql.Tx, conn *sql.DB, records []model.UnifiedInputRec
 			Subtotal: rec.Subtotal, ExpiryDate: rec.ExpiryDate, LotNumber: rec.LotNumber,
 		}
 
+		// ▼▼▼ キー生成ロジックを修正 ▼▼▼
 		key := ar.JanCode
-		if key == "0000000000000" {
+		isSyntheticKey := false
+		if key == "" || key == "0000000000000" {
 			key = fmt.Sprintf("9999999999999%s", ar.ProductName)
+			isSyntheticKey = true
 		}
+		// ▲▲▲
 
 		if master, ok := mastersMap[key]; ok {
 			if master.Origin == "JCSHMS" {
@@ -72,12 +78,11 @@ func ProcessDatRecords(tx *sql.Tx, conn *sql.DB, records []model.UnifiedInputRec
 			ar.YjQuantity = ar.DatQuantity * master.YjPackUnitQty
 			mappers.MapProductMasterToTransaction(&ar, master)
 		} else {
-			if jcshms, ok := jcshmsMap[ar.JanCode]; ok && jcshms.JC018 != "" {
+			if jcshms, ok := jcshmsMap[ar.JanCode]; ok && ar.JanCode != "" && jcshms.JC018 != "" {
 				ar.ProcessFlagMA = FlagComplete
 				ar.ProcessingStatus = sql.NullString{String: "completed", Valid: true}
 				yjCode := jcshms.JC009
 				if yjCode == "" {
-					// ★★★ 呼び出し方を修正 ★★★
 					newYj, _ := db.NextSequenceInTx(tx, "MA2Y", "MA2Y", 8)
 					yjCode = newYj
 				}
@@ -90,13 +95,16 @@ func ProcessDatRecords(tx *sql.Tx, conn *sql.DB, records []model.UnifiedInputRec
 				ar.ProcessFlagMA = FlagProvisional
 				ar.ProcessingStatus = sql.NullString{String: "provisional", Valid: true}
 
-				newYj, productCode, err := createProvisionalMaster(tx, key, ar.JanCode, ar.ProductName, mastersMap)
+				janForMaster := ar.JanCode
+				if isSyntheticKey {
+					janForMaster = ""
+				}
+				newYj, productCode, err := createProvisionalMaster(tx, key, janForMaster, ar.ProductName, mastersMap)
 				if err != nil {
 					return nil, err
 				}
 				ar.YjCode = newYj
 				ar.JanCode = productCode
-
 				ar.JanQuantity, ar.YjQuantity = 0, 0
 			}
 		}

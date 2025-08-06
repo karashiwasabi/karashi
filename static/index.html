@@ -6,10 +6,10 @@
     <title>KARASHI</title>
     <link rel="stylesheet" href="/static/css/styles.css">
     <link rel="stylesheet" href="/static/css/table_layout.css">
+    <link rel="stylesheet" href="/static/css/inout.css">
 </head>
 <body>
 
-<!-- ★★★ 修正点: ヘッダーにIDを追加 ★★★ -->
 <header id="main-header">
     <button id="inOutViewBtn" class="btn">入庫・出庫</button>
     <button id="masterEditViewBtn" class="btn">マスター</button>
@@ -22,6 +22,7 @@
     <button id="updateJcshmsBtn" class="btn">JCSHMSマスター更新</button>
     <button id="reprocessBtn" class="btn">仮登録を再計算</button>
     <button id="aggregationBtn" class="btn">集計</button>
+    <button id="monthEndViewBtn" class="btn">月末在庫</button>
     <button id="inventoryBtn" class="btn">棚卸</button>
     <button id="sampleBtn" class="btn">サンプル</button>
     <input type="file" id="importClientsInput" style="display:none;" accept=".csv">
@@ -29,7 +30,6 @@
 </header>
 
 <main>
-    <!-- ★★★ 修正点: 見出し(h1)を削除 ★★★ -->
     <div id="upload-view" class="hidden">
         <input type="file" id="datFileInput" multiple style="display:none;">
         <input type="file" id="usageFileInput" style="display:none;">
@@ -37,82 +37,64 @@
         </div>
      </div>
 
-    <div id="in-out-view" class="hidden">
-        <!-- ★★★ 修正点: 見出し(h1, h2)を削除 ★★★ -->
-        <div class="section">
-            <table id="controller-table" class="data-table" cellspacing="0" cellpadding="0">
-                <thead>
-                    <tr>
-                        <td class="center" style="width: 10%;">日付</td>
-                        <td class="center" style="width: 10%;">種別</td>
-                        <td style="width: 25%;"></td> <td class="center" style="width: 5%;">税率</td>
-                        <td class="center" style="width: 20%;">得意先</td>
-                        <td class="center" style="width: 20%;">伝票番号</td>
-                        <td class="center" style="width: 10%;">保存・削除</td>
-                    </tr>
-                </thead>
-                <tbody>
-                    <tr>
-                        <td><input type="date" id="in-out-date"></td>
-                        <td><select id="in-out-type"><option>入庫</option><option>出庫</option></select></td>
-                        <td></td> <td><input type="text" id="in-out-taxrate" value="10"></td>
-                        <td><select id="in-out-client" style="width:100%;"></select></td>
-                        <td><select id="in-out-receipt" style="width:100%;"></select></td>
-                        <td style="display: flex; gap: 5px;">
-                            <button id="saveBtn" class="btn">保存</button>
-                            <button id="deleteBtn" class="btn">伝票削除</button>
-                        </td>
-                    </tr>
-                </tbody>
-            </table>
-        </div>
-
-        <div class="section">
-             <div id="details-table-container">
-                <table id="details-table" class="data-table" cellspacing="0" cellpadding="0">
-                    <thead>
-                        <tr>
-                            <td rowspan="2" class="center">日付</td>
-                            <td rowspan="2" class="center">種別</td>
-                            <td class="center">YJ</td>
-                            <td colspan="2" class="center">製品名</td>
-                            <td rowspan="2" class="center">個数</td>
-                            <td class="center">JAN数量</td>
-                            <td class="center">JAN包装数量</td>
-                            <td class="center">JAN単位</td>
-                            <td class="center">単価</td>
-                            <td class="center">税額</td>
-                            <td class="center">期限</td>
-                            <td class="center">ロット</td>
-                            <td class="center"><button id="addRowBtn">追加</button></td>
-                        </tr>
-                        <tr>
-                            <td class="center">JAN</td>
-                            <td class="center">包装</td>
-                            <td class="center">メーカー</td>
-                            <td class="center">YJ数量</td>
-                            <td class="center">YJ包装数量</td>
-                            <td class="center">YJ単位</td>
-                            <td class="center">金額</td>
-                            <td class="center">税率</td>
-                            <td class="center">得意先</td>
-                            <td class="center">伝票番号</td>
-                            <td class="center">行</td>
-                        </tr>
-                    </thead>
-                     <tbody>
-                    </tbody>
-                </table>
+    <div id="in-out-view" class="hidden inout-view-container">
+        <div id="inout-header-controls" class="inout-header-controls">
+            <div class="field-group">
+                <label for="in-out-date">日付</label>
+                <input type="date" id="in-out-date">
+            </div>
+            <div class="field-group">
+                <label for="in-out-type">種別</label>
+                <select id="in-out-type"><option>入庫</option><option>出庫</option></select>
+            </div>
+            <div class="field-group">
+                <label for="in-out-client">得意先</label>
+                <select id="in-out-client"></select>
+            </div>
+            <div class="field-group">
+                <label for="in-out-receipt">伝票番号</label>
+                <select id="in-out-receipt"></select>
+            </div>
+            <div class="buttons-group">
+                <button id="saveBtn" class="btn">保存</button>
+                <button id="deleteBtn" class="btn">伝票削除</button>
             </div>
         </div>
 
-         <div id="search-modal" class="modal-overlay hidden">
+        <div class="inout-details-header">
+            <button id="addRowBtn" class="btn">明細を追加</button>
+        </div>
+
+        <div id="inout-details-container" class="table-container">
+            <table id="inout-details-table" class="data-table">
+                <thead>
+                    <tr>
+                        <th rowspan="2" style="width: 28%;">製品名</th>
+                        <th rowspan="2" style="width: 15%;">メーカー</th>
+                        <th colspan="2">数量</th>
+                        <th rowspan="2" style="width: 8%;">単価(薬価)</th>
+                        <th rowspan="2" style="width: 9%;">金額</th>
+                        <th rowspan="2" style="width: 8%;">期限</th>
+                        <th rowspan="2" style="width: 10%;">ロット</th>
+                        <th rowspan="2" style="width: 5%;">削除</th>
+                    </tr>
+                    <tr>
+                        <th style="width: 8%;">JAN数量</th>
+                        <th style="width: 9%;">YJ数量</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    </tbody>
+            </table>
+        </div>
+
+        <div id="search-modal" class="modal-overlay hidden">
             <div class="modal-content">
                 <div class="modal-header">
                     <h2>薬品検索</h2>
                     <button id="closeModalBtn" class="close-button">&times;</button>
                  </div>
-                <div style="margin-bottom: 10px; display: flex; gap: 5px;">
+                 <div style="margin-bottom: 10px; display: flex; gap: 5px;">
                     <input type="text" id="product-search-input" placeholder="製品名またはカナ名（2文字以上）" style="flex-grow: 1; padding: 5px;">
                     <button id="product-search-btn" class="btn">検索</button>
                 </div>
@@ -135,16 +117,13 @@
              </div>
         </div>
     </div>
-
     <div id="master-edit-view" class="hidden">
-        <!-- ★★★ 修正点: 見出し(h1)を削除 ★★★ -->
         <div class="in-out-header">
-            <!-- ★★★ 修正点: h1を削除したため、空のdivでボタンを右寄せに保つ ★★★ -->
             <div></div>
             <div>
                 <button id="addMasterRowBtn" class="btn">新規行を追加</button>
                 <button id="refreshMastersBtn" class="btn">一覧を更新</button>
-            </div>
+             </div>
         </div>
         <div class="table-container">
             <table id="master-edit-table" class="data-table">
@@ -152,54 +131,78 @@
                 </thead>
                 <tbody>
                 </tbody>
-            </table>
+             </table>
         </div>
     </div>
 
     <div id="aggregation-view" class="hidden">
-        <!-- ★★★ 修正点: 見出し(h1)を削除 ★★★ -->
         <div class="filter-container">
             <div class="filter-group">
                 <label for="startDate">開始</label>
                 <input type="date" id="startDate">
-            </div>
+             </div>
             <div class="filter-group">
                 <label for="endDate">終了</label>
                 <input type="date" id="endDate">
             </div>
             <div class="filter-group">
                 <label for="kanaName">カナ名</label>
-                <input type="text" id="kanaName" placeholder="（部分一致）">
+                 <input type="text" id="kanaName" placeholder="（部分一致）">
             </div>
             <div class="filter-group">
                 <label>薬の種類</label>
                 <div class="filter-group-checkbox">
-                    <label><input type="checkbox" name="drugType" value="poison"> 毒薬</label>
+                    <label><input type="checkbox" name="drugType" value="poison">  毒薬</label>
                     <label><input type="checkbox" name="drugType" value="deleterious"> 劇薬</label>
                     <label><input type="checkbox" name="drugType" value="narcotic"> 麻薬</label>
                     <label><input type="checkbox" name="drugType" value="psychotropic1"> 向精神薬(1)</label>
                     <label><input type="checkbox" name="drugType" value="psychotropic2"> 向精神薬(2)</label>
-                    <label><input type="checkbox" name="drugType" value="psychotropic3"> 向精神薬(3)</label>
+                     <label><input type="checkbox" name="drugType" value="psychotropic3"> 向精神薬(3)</label>
                     <label><input type="checkbox" name="drugType" value="stimulant"> 覚醒剤</label>
                     <label><input type="checkbox" name="drugType" value="stimulant_raw"> 覚醒剤原料</label>
                 </div>
             </div>
-             <div class="filter-group">
+              <div class="filter-group">
                  <label style="visibility: hidden;">ダミー</label>
-                 <label class="no-movement-label"><input type="checkbox" id="no-movement-filter"> 動きのない品目</label>
+                <label class="no-movement-label"><input type="checkbox" id="no-movement-filter"> 動きのない品目</label>
             </div>
             <div class="filter-group-buttons">
                 <button id="run-aggregation-btn" class="btn">集計実行</button>
-                <button id="print-aggregation-btn" class="btn">印刷</button>
+                 <button id="print-aggregation-btn" class="btn">印刷</button>
             </div>
         </div>
-        
+
         <div id="aggregation-output-container" class="table-container">
         </div>
     </div>
+
+    <div id="month-end-view" class="hidden">
+        <div class="filter-container">
+            <div class="filter-group">
+                <label for="month-end-select">対象年月</label>
+                <select id="month-end-select">
+                    <option value="">読込中...</option>
+                </select>
+            </div>
+            <div class="filter-group">
+                 <label style="visibility: hidden;">ダミー</label> <button id="run-month-end-btn" class="btn">実行</button>
+            </div>
+        </div>
+        <div id="month-end-output-container" class="table-container">
+            </div>
+    </div>
+
+    <div id="inventory-view" class="hidden">
+        <input type="file" id="inventoryFileInput" style="display:none;">
+        <div id="inventory-output-container" class="table-container">
+        </div>
+    </div>
+
+    <div id="sample-view" class="hidden">
+    </div>
+
 </main>
 
-<!-- ★★★ 追加: ローディング表示、通知、トップへ戻るボタンのHTML ★★★ -->
 <div id="loading-overlay" class="hidden">
     <div class="spinner"></div>
     <p>処理中...</p>

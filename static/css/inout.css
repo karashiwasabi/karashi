@@ -1,0 +1,70 @@
+/* File: static/css/inout.css (修正後) */
+
+/* --- 入出庫画面 --- */
+.inout-view-container {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+/* ヘッダーコントロール部 */
+.inout-header-controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 16px; /* 縦の隙間・横の隙間 */
+    padding: 16px;
+    border: 1px solid #000;
+    background-color: #f7f7f7;
+    align-items: flex-end; /* 要素の下端を揃える */
+}
+
+.inout-header-controls .field-group {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+.inout-header-controls .field-group label {
+    font-size: 12px;
+    font-weight: bold;
+}
+.inout-header-controls .field-group input,
+.inout-header-controls .field-group select {
+    padding: 6px;
+    border: 1px solid #000;
+    font-size: 14px;
+    min-width: 150px;
+}
+.inout-header-controls .buttons-group {
+    display: flex;
+    gap: 8px;
+    margin-left: auto; /* 右端に寄せる */
+}
+
+/* 明細リストコンテナ */
+.inout-details-header {
+    text-align: right;
+}
+
+/* --- ▼▼▼ここから下を修正▼▼▼ --- */
+
+/* 2行目になる補足情報セルのスタイル */
+#inout-details-table .lower-info-cell {
+    background-color: #f8f8f8;
+    color: #333;
+    font-size: 10pt;
+    padding-left: 10px !important;
+    text-align: left;
+}
+
+#inout-details-table .info-label {
+    font-weight: bold;
+    margin-left: 15px;
+}
+#inout-details-table .info-label:first-child {
+    margin-left: 0;
+}
+
+/* 読み取り専用の表示用セルのスタイル */
+#inout-details-table td[class^="display-"] {
+    background-color: #eee;
+}

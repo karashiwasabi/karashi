@@ -1,12 +1,10 @@
-// File: static/js/aggregation.js
+// File: static/js/aggregation.js (修正後の完全なコード)
 import { transactionTypeMap } from './common_table.js';
-
 const view = document.getElementById('aggregation-view');
 const runBtn = document.getElementById('run-aggregation-btn');
 const printBtn = document.getElementById('print-aggregation-btn');
 const outputContainer = document.getElementById('aggregation-output-container');
 
-// ★★★ 追加: 集計テーブルの列幅を定義 ★★★
 const colWidths = [
     "5.83%", "4.5%", "9.15%", "13.77%", "13.77%",
     "2.91%", "5.34%", "7.69%", "5.34%", "7.21%",
@@ -17,21 +15,7 @@ const colgroup = `<colgroup>${
 }</colgroup>`;
 
 function createAggregationTableHTML(tableId) {
-  const header = `
-    <thead>
-      <tr>
-        <th rowspan="2">日付</th><th rowspan="2">種別</th><th>YJ</th><th colspan="2">製品名</th>
-        <th rowspan="2">個数</th><th>JAN数量</th><th>JAN包装数</th><th>JAN単位</th>
-        <th>単価</th><th>税額</th><th>期限</th><th>ロット</th><th>MA</th>
-      </tr>
-      <tr>
-        <th>JAN</th><th>包装</th><th>メーカー</th><th>YJ数量</th>
-        <th>YJ包装数</th><th>YJ単位</th><th>金額</th><th>税率</th>
-        <th>得意先</th><th>伝票番号</th><th>行</th>
-      </tr>
-    </thead>
-  `;
-  return `<table id="${tableId}" class="data-table">${colgroup}${header}<tbody>
+  return `<table id="${tableId}" class="data-table">${colgroup}<tbody>
     <tr><td colspan="14">フィルター条件を指定して「集計実行」を押してください。</td></tr>
   </tbody></table>`;
 }
@@ -50,6 +34,7 @@ const noMovementCheckbox = document.getElementById('no-movement-filter');
 
 const safeToFixed = (num, digits = 2) => (typeof num === 'number' ? num.toFixed(digits) : (0).toFixed(digits));
 
+// ▼▼▼ 修正点: HTMLの組み立てロジックを全面的に修正 ▼▼▼
 function renderResults(data) {
     if (!data || data.length === 0) {
         outputContainer.innerHTML = "<p>対象データが見つかりませんでした。</p>";
@@ -57,36 +42,48 @@ function renderResults(data) {
     }
 
     let html = '';
+    // YJGroup (大グループ) ごとにループ
     data.forEach(yg => {
-        yg.packageGroups.forEach(pg => {
-            html += `<table class="aggregation-group-table">${colgroup}`; // ★★★ 修正: colgroupを追加
+        // 大グループごとに一つのテーブルを作成
+        html += `<table class="aggregation-group-table">${colgroup}`;
 
-            const line1Parts = [
-                `${yg.yjCode} ${yg.productName}`,
-                `YJ数量 合計: ${safeToFixed(yg.totalYjQty)}`,
-                `処方YJ数量 最大値: ${safeToFixed(yg.maxUsageYjQty)}`
-            ];
-            const line2Parts = [
-                `${pg.packageKey}`,
-                `JAN数量 合計: ${safeToFixed(pg.totalJanQty)}`,
-                `処方JAN数量 最大値: ${safeToFixed(pg.maxUsageJanQty)}`,
-                `YJ数量 合計: ${safeToFixed(pg.totalYjQty)}`,
-                `処方YJ数量 最大値: ${safeToFixed(pg.maxUsageYjQty)}`
-            ];
-            
-            html += `
-                <thead class="repeating-header">
-                    <tr>
-                        <th colspan="14">
-                            <div class="agg-header-line1">${line1Parts.join(' ')}</div>
-                            <div class="agg-header-line2">${line2Parts.join(' ')}</div>
+        // 大グループのヘッダーを作成 (YJコード、製品名、合計数量など)
+        const line1Parts = [
+            `${yg.yjCode} ${yg.productName}`,
+            `YJ数量 合計: ${safeToFixed(yg.totalYjQty)}`,
+            `処方YJ数量 最大値: ${safeToFixed(yg.maxUsageYjQty)}`
+        ];
+        html += `
+            <thead class="repeating-header">
+                <tr>
+                    <th colspan="14">
+                        <div class="agg-header-line1">${line1Parts.join(' ')}</div>
+                    </th>
+                </tr>
+            </thead>
+        `;
+
+        html += '<tbody>';
+        // PackageGroup (包装ごとの小グループ) ごとにループ
+        yg.packageGroups.forEach(pg => {
+            if (pg.transactions && pg.transactions.length > 0) {
+                // 小グループのヘッダー (包装情報、小計など)
+                const line2Parts = [
+                    `${pg.packageKey}`,
+                    `JAN数量 合計: ${safeToFixed(pg.totalJanQty)}`,
+                    `処方JAN数量 最大値: ${safeToFixed(pg.maxUsageJanQty)}`,
+                    `YJ数量 合計: ${safeToFixed(pg.totalYjQty)}`,
+                    `処方YJ数量 最大値: ${safeToFixed(pg.maxUsageYjQty)}`
+                ];
+                html += `
+                    <tr class="details-header">
+                        <th colspan="14" style="text-align:left; background-color: #f7f7f7;">
+                           <div class="agg-header-line2">${line2Parts.join(' ')}</div>
                         </th>
                     </tr>
-                </thead>
-            `;
+                `;
 
-            html += '<tbody>';
-            if (pg.transactions && pg.transactions.length > 0) {
+                // 取引明細のヘッダー
                 html += `
                     <tr class="details-header">
                         <th rowspan="2">日付</th><th rowspan="2">種別</th><th>YJ</th><th colspan="2">製品名</th>
@@ -99,13 +96,15 @@ function renderResults(data) {
                         <th>得意先</th><th>伝票番号</th><th>行</th>
                     </tr>
                 `;
+
+                // 取引明細の行
                 pg.transactions.forEach(t => {
                     html += `
                         <tr>
                             <td rowspan="2">${t.transactionDate}</td><td rowspan="2">${transactionTypeMap[t.flag] || ''}</td><td>${t.yjCode}</td>
                             <td colspan="2" class="left">${t.productName}</td><td rowspan="2" class="right">${t.datQuantity}</td>
                             <td class="right">${safeToFixed(t.janQuantity)}</td><td class="right">${t.janPackUnitQty}</td><td>${t.janUnitName}</td>
-                            <td class="right">${safeToFixed(t.unitPrice)}</td><td class="right">${t.taxAmount}</td><td>${t.expiryDate}</td>
+                            <td class="right">${safeToFixed(t.unitPrice, 4)}</td><td class="right">${t.taxAmount}</td><td>${t.expiryDate}</td>
                             <td>${t.lotNumber}</td><td>${t.processFlagMA}</td>
                         </tr>
                         <tr>
@@ -116,14 +115,13 @@ function renderResults(data) {
                         </tr>
                     `;
                 });
-            } else {
-                 html += '<tr><td colspan="14" style="text-align:center; padding:10px;">このグループの明細はありません。</td></tr>';
             }
-            html += '</tbody></table>';
         });
+        html += '</tbody></table>'; // 大グループのテーブルを閉じる
     });
     outputContainer.innerHTML = html;
 }
+// ▲▲▲ ここまで修正 ▲▲▲
 
 export function initAggregation() {
     if (!view) return;
@@ -135,7 +133,7 @@ export function initAggregation() {
     startDateInput.value = fourMonthsAgo.toISOString().slice(0, 10);
 
     resetAggregationView();
-
+    
     if(printBtn) {
         printBtn.addEventListener('click', () => {
             window.print();
@@ -143,7 +141,7 @@ export function initAggregation() {
     }
 
     runBtn.addEventListener('click', async () => {
-        window.showLoading(); // ローディング開始
+        window.showLoading();
         
         const params = new URLSearchParams();
         params.append('startDate', startDateInput.value.replace(/-/g, ''));
@@ -160,7 +158,7 @@ export function initAggregation() {
         if (noMovementCheckbox.checked) {
             params.append('noMovement', 'true');
         }
-
+        
         try {
             const res = await fetch(`/api/aggregation?${params.toString()}`);
             if (!res.ok) throw new Error('集計に失敗しました');
@@ -169,7 +167,7 @@ export function initAggregation() {
         } catch (err) {
             outputContainer.innerHTML = `<p style="color:red;">${err.message}</p>`;
         } finally {
-            window.hideLoading(); // ローディング終了
+            window.hideLoading();
         }
     });
 }

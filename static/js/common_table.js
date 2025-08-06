@@ -1,7 +1,9 @@
 // File: static/js/common_table.js
 
-// ★★★ 修正点: 全てのフラグに対応するマップを作成し、エクスポート ★★★
+// ▼▼▼ transactionTypeMap に「0: "棚卸"」を追加 ▼▼▼
+// ▼▼▼ transactionTypeMap に「30: "月末在庫"」を追加 ▼▼▼
 export const transactionTypeMap = {
+    0: "棚卸",
     1: "納品",
     2: "返品",
     3: "処方",
@@ -9,9 +11,8 @@ export const transactionTypeMap = {
     5: "棚卸減",
     11: "入庫",
     12: "出庫",
+    30: "月末", // 追記
 };
-
-
 /**
  * アップロード結果表示用テーブルの HTML を生成
  * @param {string} tableId テーブル要素に付与する ID
@@ -57,14 +58,12 @@ export function renderUploadTableRows(tableId, records) {
     return;
   }
   
-  // ★★★ 修正点: 古いflagMapを削除 ★★★
-  
   let html = "";
   records.forEach(rec => {
     html += `
       <tr>
         <td rowspan="2">${rec.transactionDate || ""}</td>
-        <td rowspan="2">${transactionTypeMap[rec.flag] || ""}</td>
+        <td rowspan="2">${transactionTypeMap[rec.flag] ?? ""}</td>
         <td>${rec.yjCode || ""}</td>
         <td class="left" colspan="2">${rec.productName || ""}</td>
         <td class="right" rowspan="2">${rec.datQuantity?.toFixed(2) || ""}</td>
@@ -107,12 +106,9 @@ export function setupDateDropdown(inputEl) {
  */
 export async function setupClientDropdown(selectEl) {
   if (!selectEl) return;
-  
-  // 「選択してください」のみ保持する
   const preservedOptions = Array.from(selectEl.querySelectorAll('option[value=""]'));
   selectEl.innerHTML = '';
   preservedOptions.forEach(opt => selectEl.appendChild(opt));
-
   try {
     const res = await fetch('/api/clients');
     if (!res.ok) throw new Error('Failed to fetch clients');

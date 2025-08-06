@@ -74,9 +74,9 @@ INSERT OR REPLACE INTO transaction_records (
 // ★★★ 修正点: クエリに `AND (flag = 11 OR flag = 12)` を追加 ★★★
 func GetReceiptNumbersByDate(conn *sql.DB, date string) ([]string, error) {
 	const q = `
-		SELECT DISTINCT receipt_number 
-		FROM transaction_records 
-		WHERE transaction_date = ? AND (flag = 11 OR flag = 12) 
+		SELECT DISTINCT receipt_number
+		FROM transaction_records
+		WHERE transaction_date = ? AND (flag = 11 OR flag = 12)
 		ORDER BY receipt_number`
 
 	rows, err := conn.Query(q, date)
@@ -159,8 +159,7 @@ func UpdateFullTransactionInTx(tx *sql.Tx, record *model.TransactionRecord) erro
 			yj_pack_unit_qty = ?, yj_unit_name = ?,
 			flag_poison = ?, flag_deleterious = ?, flag_narcotic = ?, flag_psychotropic = ?,
 			flag_stimulant = ?, flag_stimulant_raw = ?,
-			process_flag_ma = ?, processing_status = ?
-		WHERE id = ?`
+			process_flag_ma = ?, processing_status = ? WHERE id = ?`
 
 	_, err := tx.Exec(q,
 		record.YjCode, record.ProductName, record.KanaName, record.PackageForm, record.PackageSpec, record.MakerName,
@@ -175,4 +174,82 @@ func UpdateFullTransactionInTx(tx *sql.Tx, record *model.TransactionRecord) erro
 		return fmt.Errorf("failed to update transaction ID %d: %w", record.ID, err)
 	}
 	return nil
+}
+
+// ▼▼▼ ここから追記 ▼▼▼
+
+// GetUniqueTransactionMonths は、transaction_recordsテーブルに存在するユニークな年月(YYYYMM)のリストを返します。
+func GetUniqueTransactionMonths(conn *sql.DB) ([]string, error) {
+	const q = `SELECT DISTINCT SUBSTR(transaction_date, 1, 6) FROM transaction_records ORDER BY 1 DESC`
+	rows, err := conn.Query(q)
+	if err != nil {
+		return nil, fmt.Errorf("ユニークな年月の取得に失敗: %w", err)
+	}
+	defer rows.Close()
+
+	var months []string
+	for rows.Next() {
+		var yyyymm string
+		if err := rows.Scan(&yyyymm); err != nil {
+			return nil, err
+		}
+		// YYYY-MM 形式に変換
+		if len(yyyymm) == 6 {
+			months = append(months, yyyymm[:4]+"-"+yyyymm[4:])
+		}
+	}
+	return months, nil
+}
+
+// GetTransactionSumForProduct は指定期間内の製品のYJ数量の純増減を計算します。
+func GetTransactionSumForProduct(conn *sql.DB, janCode, startDate, endDate string) (float64, error) {
+	const q = `
+        SELECT
+            SUM(CASE
+                WHEN flag IN (1, 11, 4) THEN yj_quantity
+                WHEN flag IN (2, 3, 5, 12) THEN -yj_quantity
+                ELSE 0
+            END)
+        FROM transaction_records
+        WHERE jan_code = ? AND transaction_date > ? AND transaction_date <= ?`
+
+	var netChange sql.NullFloat64
+	err := conn.QueryRow(q, janCode, startDate, endDate).Scan(&netChange)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return 0, nil
+		}
+		return 0, err
+	}
+	return netChange.Float64, nil
+}
+
+// DeleteTransactionsByFlagAndDate は指定されたフラグと日付のトランザクションを削除します。
+func DeleteTransactionsByFlagAndDate(tx *sql.Tx, flag int, date string) error {
+	const q = `DELETE FROM transaction_records WHERE flag = ? AND transaction_date = ?`
+	if _, err := tx.Exec(q, flag, date); err != nil {
+		return fmt.Errorf("flag %d, date %s のトランザクション削除に失敗: %w", flag, date, err)
+	}
+	return nil
+}
+
+// ▲▲▲ ここまで追記 ▲▲▲
+
+// GetLatestRecordByFlagは、指定された製品・日付・フラグの最新レコードをtransaction_recordsテーブルから取得します。
+func GetLatestRecordByFlag(conn *sql.DB, janCode, date string, flag int) (*model.TransactionRecord, error) {
+	const q = `
+		SELECT ` + TransactionColumns + ` FROM transaction_records
+		WHERE jan_code = ? AND transaction_date <= ? AND flag = ?
+		ORDER BY transaction_date DESC, id DESC
+		LIMIT 1`
+
+	row := conn.QueryRow(q, janCode, date, flag)
+	rec, err := ScanTransactionRecord(row)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil // 履歴がない場合はエラーではなくnilを返す
+		}
+		return nil, err
+	}
+	return rec, nil
 }

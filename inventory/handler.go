@@ -1,23 +1,16 @@
-// File: inventory/handler.go
 package inventory
 
 import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"karashi/central"
 	"karashi/db"
 	"karashi/model"
-	"karashi/units"
-	"log"
 	"net/http"
 )
 
-const (
-	FlagInvAdjIn  = 4
-	FlagInvAdjOut = 5
-)
-
-// UploadInventoryHandlerは棚卸ファイルを受け取り、YJ単位で在庫調整を行います
+// UploadInventoryHandlerは棚卸ファイルを受け取り、centralで処理した後、transaction_recordsテーブルに登録します
 func UploadInventoryHandler(conn *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		file, _, err := r.FormFile("file")
@@ -38,6 +31,29 @@ func UploadInventoryHandler(conn *sql.DB) http.HandlerFunc {
 			return
 		}
 
+		// ファイルから読み取ったデータをJANコード(または製品名)単位で集計
+		aggregatedData := make(map[string]model.UnifiedInputRecord)
+		for _, row := range parsedData.Records {
+			key := row.JanCode
+			if key == "" || key == "0000000000000" {
+				key = fmt.Sprintf("9999999999999%s", row.ProductName)
+			}
+			rowYjQty := row.JanQuantity * row.JanPackInnerQty
+
+			if data, ok := aggregatedData[key]; ok {
+				data.YjQuantity += rowYjQty
+				data.JanQuantity += row.JanQuantity
+				aggregatedData[key] = data
+			} else {
+				row.YjQuantity = rowYjQty
+				aggregatedData[key] = row
+			}
+		}
+		var aggregatedRecords []model.UnifiedInputRecord
+		for _, rec := range aggregatedData {
+			aggregatedRecords = append(aggregatedRecords, rec)
+		}
+
 		tx, err := conn.Begin()
 		if err != nil {
 			http.Error(w, "Failed to start transaction", http.StatusInternalServerError)
@@ -45,101 +61,29 @@ func UploadInventoryHandler(conn *sql.DB) http.HandlerFunc {
 		}
 		defer tx.Rollback()
 
-		// --- 1. ファイルから読み取った物理在庫をYJコード単位で集計 ---
-		physicalYjStockMap := make(map[string]float64)
-		uniqueYjCodes := make(map[string]struct{})
-		fileDataByJan := make(map[string]FileRow)
-
-		for _, row := range parsedData.Rows {
-			master, _ := db.GetProductMasterByCode(conn, row.JanCode)
-
-			var yjQty float64
-			if master != nil { // 既存マスターがある場合
-				yjQty = row.PhysicalJanQty * master.YjPackUnitQty
-			} else { // 新規の場合
-				yjQty = row.PhysicalJanQty * row.InnerPackQty
-
-				// 新規マスターを作成
-				newMasterInput := model.ProductMasterInput{
-					ProductCode:     row.JanCode,
-					YjCode:          row.YjCode,
-					ProductName:     row.ProductName,
-					Origin:          "PROVISIONAL_INV", // 棚卸由来の暫定マスター
-					YjUnitName:      units.ResolveCode(row.YjUnitName),
-					YjPackUnitQty:   row.InnerPackQty, // YJ包装数量 = 内包装数量と仮定
-					JanPackInnerQty: row.InnerPackQty,
-				}
-				if err := db.CreateProductMasterInTx(tx, newMasterInput); err != nil {
-					log.Printf("Failed to create provisional master from inventory for JAN %s: %v", row.JanCode, err)
-					http.Error(w, "Failed to create new master", http.StatusInternalServerError)
-					return
-				}
-			}
-			physicalYjStockMap[row.YjCode] += yjQty
-			uniqueYjCodes[row.YjCode] = struct{}{}
-			fileDataByJan[row.JanCode] = row
-		}
-
-		var yjCodeList []string
-		for yj := range uniqueYjCodes {
-			yjCodeList = append(yjCodeList, yj)
-		}
-
-		// --- 2. DBから現在の理論在庫をYJコード単位で取得 ---
-		systemYjStockMap, err := db.CalculateYjStockByDate(conn, date, yjCodeList)
+		// centralの関数を呼び出し、マスター準備とトランザクション作成を委任
+		finalRecords, err := central.ProcessInventoryRecords(tx, conn, aggregatedRecords)
 		if err != nil {
-			http.Error(w, "Failed to calculate system stock", http.StatusInternalServerError)
+			http.Error(w, "Failed to process inventory records", http.StatusInternalServerError)
 			return
 		}
 
-		// --- 3. 差分を計算し、調整トランザクションを生成 ---
-		var adjustments []model.TransactionRecord
+		// 登録日付と伝票番号を最終レコードに付与
 		receiptNumber := fmt.Sprintf("INV%s", date)
-		lineNumber := 1
+		for i := range finalRecords {
+			finalRecords[i].TransactionDate = date
+			finalRecords[i].ReceiptNumber = receiptNumber
+			finalRecords[i].LineNumber = fmt.Sprintf("%d", i+1)
 
-		for yjCode, physicalCount := range physicalYjStockMap {
-			systemCount := systemYjStockMap[yjCode]
-			variance := physicalCount - systemCount
-
-			if variance == 0 {
-				continue
-			}
-
-			// 代表のJANコードを検索して基本情報を設定
-			var representativeJan string
-			for jan, data := range fileDataByJan {
-				if data.YjCode == yjCode {
-					representativeJan = jan
-					break
-				}
-			}
-
-			adj := model.TransactionRecord{
-				TransactionDate:  date,
-				ReceiptNumber:    receiptNumber,
-				LineNumber:       fmt.Sprintf("%d", lineNumber),
-				YjCode:           yjCode,
-				JanCode:          representativeJan,
-				UnitPrice:        0,
-				Subtotal:         0,
-				ProcessingStatus: sql.NullString{String: "provisional", Valid: true},
-			}
-
-			if variance > 0 {
-				adj.Flag = FlagInvAdjIn
-				adj.YjQuantity = variance
-			} else {
-				adj.Flag = FlagInvAdjOut
-				adj.YjQuantity = -variance
-			}
-			adjustments = append(adjustments, adj)
-			lineNumber++
+			// ▼▼▼ ここから修正 ▼▼▼
+			// DatQuantityを設定していた不要なループを完全に削除
+			// ▼▼▼ ここまで修正 ▼▼▼
 		}
 
-		// --- 4. データベースに保存 ---
-		if len(adjustments) > 0 {
-			if err := db.PersistTransactionRecordsInTx(tx, adjustments); err != nil {
-				http.Error(w, "Failed to save adjustments", http.StatusInternalServerError)
+		// データベースに保存
+		if len(finalRecords) > 0 {
+			if err := db.PersistTransactionRecordsInTx(tx, finalRecords); err != nil {
+				http.Error(w, "Failed to save inventory records to transaction", http.StatusInternalServerError)
 				return
 			}
 		}
@@ -149,10 +93,11 @@ func UploadInventoryHandler(conn *sql.DB) http.HandlerFunc {
 			return
 		}
 
+		// 結果を返す
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"message": fmt.Sprintf("%d件のYJコードについて在庫調整を登録しました。", len(adjustments)),
-			"details": adjustments,
+			"message": fmt.Sprintf("%d件の棚卸データを登録しました。", len(finalRecords)),
+			"details": finalRecords,
 		})
 	}
 }

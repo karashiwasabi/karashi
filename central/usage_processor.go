@@ -17,13 +17,15 @@ func ProcessUsageRecords(tx *sql.Tx, conn *sql.DB, records []model.UnifiedInputR
 	keySet := make(map[string]struct{})
 	janSet := make(map[string]struct{})
 	for _, rec := range records {
-		if rec.JanCode != "" {
+		if rec.JanCode != "" && rec.JanCode != "0000000000000" {
 			janSet[rec.JanCode] = struct{}{}
 		}
+		// ▼▼▼ キー生成ロジックを修正 ▼▼▼
 		key := rec.JanCode
-		if key == "" {
+		if key == "" || key == "0000000000000" {
 			key = fmt.Sprintf("9999999999999%s", rec.ProductName)
 		}
+		// ▲▲▲
 		if key != "" {
 			keySet[key] = struct{}{}
 		}
@@ -58,12 +60,14 @@ func ProcessUsageRecords(tx *sql.Tx, conn *sql.DB, records []model.UnifiedInputR
 			YjUnitName:      rec.YjUnitName,
 		}
 
+		// ▼▼▼ キー生成ロジックを修正 ▼▼▼
 		key := ar.JanCode
 		isSyntheticKey := false
-		if key == "" {
+		if key == "" || key == "0000000000000" {
 			key = fmt.Sprintf("9999999999999%s", ar.ProductName)
 			isSyntheticKey = true
 		}
+		// ▲▲▲
 
 		if master, ok := mastersMap[key]; ok {
 			if master.Origin == "JCSHMS" {
@@ -74,18 +78,23 @@ func ProcessUsageRecords(tx *sql.Tx, conn *sql.DB, records []model.UnifiedInputR
 				ar.ProcessingStatus = sql.NullString{String: "provisional", Valid: true}
 			}
 
-			// ★★★ ここからJAN数量の計算ロジックを修正 ★★★
+			// ▼▼▼ 修正点: masterのProductCodeをar.JanCodeに設定する ▼▼▼
+			ar.JanCode = master.ProductCode
+
 			if master.JanPackInnerQty > 0 {
 				ar.JanQuantity = ar.YjQuantity / master.JanPackInnerQty
 			} else {
-				ar.JanQuantity = ar.YjQuantity // ゼロ除算を避ける
+				ar.JanQuantity = ar.YjQuantity
 			}
-			// ★★★ ここまで ★★★
 
 			mappers.MapProductMasterToTransaction(&ar, master)
-			ar.JanCode = master.ProductCode
+			// YJコードが空の既存マスターを参照した場合、ここで上書きする
+			if ar.YjCode == "" && master.YjCode != "" {
+				ar.YjCode = master.YjCode
+			}
+
 		} else {
-			if jcshms, ok := jcshmsMap[ar.JanCode]; ok && jcshms.JC018 != "" {
+			if jcshms, ok := jcshmsMap[ar.JanCode]; ok && ar.JanCode != "" && jcshms.JC018 != "" {
 				ar.ProcessFlagMA = FlagComplete
 				ar.ProcessingStatus = sql.NullString{String: "completed", Valid: true}
 				yjCode := jcshms.JC009
@@ -97,13 +106,11 @@ func ProcessUsageRecords(tx *sql.Tx, conn *sql.DB, records []model.UnifiedInputR
 				mappers.CreateMasterFromJcshmsInTx(tx, ar.JanCode, yjCode, jcshms)
 				mappers.MapJcshmsToTransaction(&ar, jcshms)
 
-				// ★★★ ここからJAN数量の計算ロジックを修正 ★★★
 				if jcshms.JA006.Float64 > 0 {
 					ar.JanQuantity = ar.YjQuantity / jcshms.JA006.Float64
 				} else {
-					ar.JanQuantity = ar.YjQuantity // ゼロ除算を避ける
+					ar.JanQuantity = ar.YjQuantity
 				}
-				// ★★★ ここまで ★★★
 
 			} else {
 				ar.ProcessFlagMA = FlagProvisional
@@ -119,8 +126,6 @@ func ProcessUsageRecords(tx *sql.Tx, conn *sql.DB, records []model.UnifiedInputR
 				}
 				ar.YjCode = newYj
 				ar.JanCode = productCode
-
-				// 暫定マスターには包装数量がないため、YjQuantityをコピー
 				ar.JanQuantity = ar.YjQuantity
 			}
 		}

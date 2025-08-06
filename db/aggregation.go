@@ -1,4 +1,4 @@
-// File: db/aggregation.go
+// File: db/aggregation.go (修正後の完全なコード)
 package db
 
 import (
@@ -142,28 +142,39 @@ func GetAggregatedTransactions(conn *sql.DB, filters model.AggregationFilters) (
 	// --- Step 4: 集計計算 ---
 	var result []model.YJGroup
 	for _, yjGroup := range yjGroupMap {
+		// まず包装(PackageGroup)ごとの小計を計算
 		for i := range yjGroup.PackageGroups {
 			pkgGroup := &yjGroup.PackageGroups[i]
 			for _, t := range pkgGroup.Transactions {
-				signedJanQty, signedYjQty := t.JanQuantity, t.YjQuantity
-				// ★★★ 修正点: 符号反転の条件に「12 (出庫)」を追加 ★★★
+				var signedJanQty, signedYjQty float64
+
 				if t.Flag == 2 || t.Flag == 3 || t.Flag == 12 {
-					signedJanQty = -signedJanQty
-					signedYjQty = -signedYjQty
+					signedJanQty = -t.JanQuantity
+					signedYjQty = -t.YjQuantity
+				} else if t.Flag == 1 || t.Flag == 11 || t.Flag == 4 {
+					signedJanQty = t.JanQuantity
+					signedYjQty = t.YjQuantity
+				} else if t.Flag == 5 {
+					signedJanQty = -t.JanQuantity
+					signedYjQty = -t.YjQuantity
 				}
+
 				pkgGroup.TotalJanQty += signedJanQty
 				pkgGroup.TotalYjQty += signedYjQty
+
 				if t.Flag == 3 {
-					if -signedJanQty > pkgGroup.MaxUsageJanQty {
-						pkgGroup.MaxUsageJanQty = -signedJanQty
-					}
 					if -signedYjQty > pkgGroup.MaxUsageYjQty {
 						pkgGroup.MaxUsageYjQty = -signedYjQty
+					}
+					if -t.JanQuantity > pkgGroup.MaxUsageJanQty {
+						pkgGroup.MaxUsageJanQty = -t.JanQuantity
 					}
 				}
 			}
 		}
 
+		// ▼▼▼ 修正点: YJGroup(大グループ)の合計値を計算する処理を追加 ▼▼▼
+		// 包装ごとの小計を、大グループの合計に足し上げていく
 		for _, pg := range yjGroup.PackageGroups {
 			yjGroup.TotalJanQty += pg.TotalJanQty
 			yjGroup.TotalYjQty += pg.TotalYjQty
@@ -171,6 +182,8 @@ func GetAggregatedTransactions(conn *sql.DB, filters model.AggregationFilters) (
 				yjGroup.MaxUsageYjQty = pg.MaxUsageYjQty
 			}
 		}
+		// ▲▲▲ ここまで ▲▲▲
+
 		result = append(result, *yjGroup)
 	}
 
@@ -181,7 +194,6 @@ func GetAggregatedTransactions(conn *sql.DB, filters model.AggregationFilters) (
 		totalTransactions := 0
 		for _, pg := range yjGroup.PackageGroups {
 			totalTransactions += len(pg.Transactions)
-			// 処方(flag=3)があるかチェック
 			for _, t := range pg.Transactions {
 				if t.Flag == 3 {
 					hasPrescription = true
@@ -194,12 +206,10 @@ func GetAggregatedTransactions(conn *sql.DB, filters model.AggregationFilters) (
 		}
 
 		if filters.NoMovement {
-			// 「動きのない品目」がチェックされている場合は、「処方がなかった」品目を表示する
 			if !hasPrescription {
 				filteredResult = append(filteredResult, yjGroup)
 			}
 		} else {
-			// チェックされていない場合は、これまで通り「何らかの動きがあった」品目を表示する
 			if totalTransactions > 0 {
 				filteredResult = append(filteredResult, yjGroup)
 			}

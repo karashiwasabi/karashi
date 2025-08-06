@@ -37,11 +37,11 @@ func SearchJcshmsByName(conn *sql.DB, nameQuery string) ([]model.ProductMasterVi
 		var tempJcshms model.JCShms
 		var jc000, jc009, jc018, jc022, jc030, jc037, jc039 sql.NullString
 		var jc044 sql.NullFloat64
-		var jc050 sql.NullString // ★★★ JC050を安全に読み込むため、一時的に文字列型で受け取る
+		var jc050 sql.NullString
 
 		if err := rows.Scan(
 			&jc000, &jc009, &jc018, &jc022, &jc030, &jc037, &jc039,
-			&jc044, &jc050, // ★★★ スキャン先をjc050に変更
+			&jc044, &jc050,
 			&tempJcshms.JA006, &tempJcshms.JA008, &tempJcshms.JA007,
 		); err != nil {
 			return nil, err
@@ -51,7 +51,6 @@ func SearchJcshmsByName(conn *sql.DB, nameQuery string) ([]model.ProductMasterVi
 		tempJcshms.JC039 = jc039.String
 		tempJcshms.JC044 = jc044.Float64
 
-		// ★★★ ここからがJC050を安全に数値へ変換する処理 ★★★
 		val, err := strconv.ParseFloat(jc050.String, 64)
 		if err != nil {
 			tempJcshms.JC050 = 0
@@ -61,7 +60,6 @@ func SearchJcshmsByName(conn *sql.DB, nameQuery string) ([]model.ProductMasterVi
 		} else {
 			tempJcshms.JC050 = val
 		}
-		// ★★★ ここまで ★★★
 
 		var nhiPrice float64
 		if tempJcshms.JC044 > 0 {
@@ -71,13 +69,24 @@ func SearchJcshmsByName(conn *sql.DB, nameQuery string) ([]model.ProductMasterVi
 		pkg := units.FormatPackageSpec(&tempJcshms)
 
 		yjUnitName := units.ResolveName(jc039.String)
-		janUnitCode := tempJcshms.JA007.String
+		janUnitCodeStr := tempJcshms.JA007.String
 		var janUnitName string
-		if janUnitCode == "0" || janUnitCode == "" {
+		if janUnitCodeStr == "0" || janUnitCodeStr == "" {
 			janUnitName = yjUnitName
 		} else {
-			janUnitName = units.ResolveName(janUnitCode)
+			janUnitName = units.ResolveName(janUnitCodeStr)
 		}
+
+		// ▼▼▼ 修正箇所 ▼▼▼
+		// 文字列のJAN単位コードを整数(int)に変換して、ProductMaster構造体にセットする
+		var janUnitCodeInt int
+		if tempJcshms.JA007.Valid {
+			val, err := strconv.Atoi(tempJcshms.JA007.String)
+			if err == nil {
+				janUnitCodeInt = val
+			}
+		}
+		// ▲▲▲ ここまで ▲▲▲
 
 		view := model.ProductMasterView{
 			ProductMaster: model.ProductMaster{
@@ -89,6 +98,7 @@ func SearchJcshmsByName(conn *sql.DB, nameQuery string) ([]model.ProductMasterVi
 				PackageSpec:     jc037.String,
 				YjUnitName:      yjUnitName,
 				JanUnitName:     janUnitName,
+				JanUnitCode:     janUnitCodeInt, // 修正した値をセット
 				YjPackUnitQty:   jc044.Float64,
 				JanPackInnerQty: tempJcshms.JA006.Float64,
 				JanPackUnitQty:  tempJcshms.JA008.Float64,

@@ -113,6 +113,14 @@ func ImportClientsHandler(conn *sql.DB) http.HandlerFunc {
 			return
 		}
 
+		// ▼▼▼ ここから修正 ▼▼▼
+		// 製品インポートと同様に、コミット後にシーケンスを更新する
+		if err := db.InitializeSequenceFromMaxClientCode(conn); err != nil {
+			// このエラーは致命的ではないため、ログには出すが処理は続行する
+			log.Printf("Warning: failed to re-initialize sequence after client import: %v", err)
+		}
+		// ▲▲▲ ここまで修正 ▲▲▲
+
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{
 			"message": fmt.Sprintf("%d件の得意先をインポートしました。", importedCount),
@@ -123,7 +131,6 @@ func ImportClientsHandler(conn *sql.DB) http.HandlerFunc {
 // ExportProductsHandler handles exporting the product master to a CSV file.
 func ExportProductsHandler(conn *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// ★★★ CHANGED: Use GetEditableProductMasters to fetch only non-JCSHMS items ★★★
 		products, err := db.GetEditableProductMasters(conn)
 		if err != nil {
 			http.Error(w, "Failed to get products", http.StatusInternalServerError)
@@ -240,9 +247,16 @@ func ImportProductsHandler(conn *sql.DB) http.HandlerFunc {
 			importedCount++
 		}
 
+		// 先にトランザクションをコミットして、インポート内容をDBに反映させる
 		if err := tx.Commit(); err != nil {
 			http.Error(w, "Failed to commit transaction", http.StatusInternalServerError)
 			return
+		}
+
+		// コミット後、最新のDB状態からYJコードの最大値を取得し、シーケンスを更新する
+		if err := db.InitializeSequenceFromMaxYjCode(conn); err != nil {
+			// このエラーは致命的ではないため、ログには出すが処理は続行する
+			log.Printf("Warning: failed to re-initialize sequence after product import: %v", err)
 		}
 
 		w.Header().Set("Content-Type", "application/json")
