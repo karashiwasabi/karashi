@@ -1,15 +1,48 @@
-// File: model/types.go (修正版)
+// File: model/types.go (Corrected)
 package model
 
 import "database/sql"
 
+// StockLedgerYJGroupは、在庫台帳のYJコードごとのグループです。
+type StockLedgerYJGroup struct {
+	YjCode            string                    `json:"yjCode"`
+	ProductName       string                    `json:"productName"`
+	YjUnitName        string                    `json:"yjUnitName"` // ★ 追加
+	PackageLedgers    []StockLedgerPackageGroup `json:"packageLedgers"`
+	StartingBalance   float64                   `json:"startingBalance"`
+	NetChange         float64                   `json:"netChange"`
+	EndingBalance     float64                   `json:"endingBalance"`
+	TotalReorderPoint float64                   `json:"totalReorderPoint"`
+	IsReorderNeeded   bool                      `json:"isReorderNeeded"`
+}
+
+// StockLedgerPackageGroupは、包装ごとの在庫台帳です。
+type StockLedgerPackageGroup struct {
+	PackageKey      string              `json:"packageKey"`
+	JanUnitName     string              `json:"janUnitName"` // ★ 追加
+	StartingBalance float64             `json:"startingBalance"`
+	Transactions    []LedgerTransaction `json:"transactions"`
+	NetChange       float64             `json:"netChange"`
+	EndingBalance   float64             `json:"endingBalance"`
+	MaxUsage        float64             `json:"maxUsage"`
+	ReorderPoint    float64             `json:"reorderPoint"`
+	IsReorderNeeded bool                `json:"isReorderNeeded"`
+}
+
+// LedgerTransactionは、在庫推移計算後の個々のトランザクションです。
+type LedgerTransaction struct {
+	TransactionRecord
+	RunningBalance float64 `json:"runningBalance"`
+}
+
 // AggregationFilters は集計時のフィルター条件を保持します
 type AggregationFilters struct {
-	StartDate  string
-	EndDate    string
-	KanaName   string
-	DrugTypes  []string
-	NoMovement bool
+	StartDate   string
+	EndDate     string
+	KanaName    string
+	DrugTypes   []string
+	NoMovement  bool
+	Coefficient float64
 }
 
 // YJGroup はYJコードごとの集計結果です
@@ -31,8 +64,6 @@ type PackageGroup struct {
 	MaxUsageYjQty  float64             `json:"maxUsageYjQty"`
 	Transactions   []TransactionRecord `json:"transactions"`
 }
-
-// ★★★ ここまで ★★★
 
 type JCShms struct {
 	JC009 string

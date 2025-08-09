@@ -1,7 +1,6 @@
 // File: static/js/inventory.js
 // ▼▼▼ 呼び出す関数を共通のものに変更 ▼▼▼
 import { createUploadTableHTML, renderUploadTableRows } from './common_table.js';
-
 let view, fileInput, outputContainer;
 
 // ▼▼▼ 専用のrenderResults関数は不要なため削除 ▼▼▼
@@ -22,7 +21,6 @@ export function initInventoryView() {
     outputContainer = document.getElementById('inventory-output-container');
     
     resetInventoryView();
-
     fileInput.addEventListener('change', async (e) => {
         const file = e.target.files[0];
         if (!file) return;
@@ -48,7 +46,6 @@ export function initInventoryView() {
             
             // ▼▼▼ 呼び出す関数を共通の renderUploadTableRows に変更 ▼▼▼
             renderUploadTableRows('inventory-output-table', data.details);
-
         } catch (err) {
             window.showNotification(`エラー: ${err.message}`, 'error');
             tbody.innerHTML = `<tr><td colspan="14" style="color:red; text-align:center;">エラー: ${err.message}</td></tr>`;

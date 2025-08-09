@@ -1,4 +1,4 @@
-// File: static/js/app.js
+// File: static/js/app.js (Corrected)
 import { initDatUpload, resetDatUploadView } from './dat.js';
 import { initUsageUpload, resetUsageUploadView } from './usage.js';
 import { initInOut, resetInOutView } from './inout.js';
@@ -8,8 +8,6 @@ import { initAggregation, resetAggregationView } from './aggregation.js';
 import { initUpdateMaster } from './update_master.js';
 import { initReprocessButton } from './reprocess.js';
 import { initInventoryView, resetInventoryView } from './inventory.js';
-// ▼▼▼ 以下を追記 ▼▼▼
-import { initMonthEndView, resetMonthEndView } from './month_end.js';
 
 // --- グローバルUI要素の管理 ---
 const loadingOverlay = document.getElementById('loading-overlay');
@@ -37,7 +35,6 @@ document.addEventListener('DOMContentLoaded', () => {
   let isMasterEditInitialized = false;
   let isAggregationInitialized = false;
   let isInventoryInitialized = false;
-  let isMonthEndInitialized = false; // ▼▼▼ 追記
   let isSampleInitialized = false;
 
   // --- 状態管理 ---
@@ -52,13 +49,13 @@ document.addEventListener('DOMContentLoaded', () => {
   const mainHeader = document.getElementById('main-header');
   const menuButtons = mainHeader.querySelectorAll('.btn');
   const allViews = document.querySelectorAll('main > div[id$="-view"]');
+  
   const viewMap = {
       'inOutViewBtn': 'in-out-view',
       'masterEditViewBtn': 'master-edit-view',
       'datBtn': 'upload-view',
       'usageBtn': 'upload-view',
       'aggregationBtn': 'aggregation-view',
-      'monthEndViewBtn': 'month-end-view', // ▼▼▼ 追記
       'inventoryBtn': 'inventory-view',
       'sampleBtn': 'sample-view',
   };
@@ -109,10 +106,6 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!isInventoryInitialized) { initInventoryView(); isInventoryInitialized = true; }
             else { resetInventoryView(); }
             document.getElementById('inventoryFileInput').click();
-            break;
-        case 'month-end-view': // ▼▼▼ 追記
-            if (!isMonthEndInitialized) { initMonthEndView(); isMonthEndInitialized = true; }
-            resetMonthEndView();
             break;
         case 'sample-view':
             if (!isSampleInitialized) {

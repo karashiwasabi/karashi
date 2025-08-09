@@ -11,12 +11,10 @@ export function resetUsageUploadView() {
 
 export function initUsageUpload() {
     if(!usageBtn || !usageInput || !uploadContainer) return;
-
     // ★★★ 修正点: このファイル内のクリックイベントリスナーを削除 ★★★
     // usageBtn.addEventListener('click', () => {
     //     usageInput.click();
     // });
-
     usageInput.addEventListener('change', async e => {
         if (!e.target.files.length) return;
         const tbody = document.querySelector('#upload-output-table tbody');

@@ -45,26 +45,4 @@
     text-align: right;
 }
 
-/* --- ▼▼▼ここから下を修正▼▼▼ --- */
-
-/* 2行目になる補足情報セルのスタイル */
-#inout-details-table .lower-info-cell {
-    background-color: #f8f8f8;
-    color: #333;
-    font-size: 10pt;
-    padding-left: 10px !important;
-    text-align: left;
-}
-
-#inout-details-table .info-label {
-    font-weight: bold;
-    margin-left: 15px;
-}
-#inout-details-table .info-label:first-child {
-    margin-left: 0;
-}
-
-/* 読み取り専用の表示用セルのスタイル */
-#inout-details-table td[class^="display-"] {
-    background-color: #eee;
-}
+/* --- 古いレイアウト用のCSSはここから削除 --- */

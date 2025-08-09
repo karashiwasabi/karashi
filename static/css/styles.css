@@ -32,7 +32,6 @@ th {
 .hidden { display: none !important; }
 
 /* --- ページ構成 --- */
-/* ★★★ 修正点: ヘッダーをスティッキー(固定)に ★★★ */
 header {
     display: flex;
     flex-wrap: wrap; /* ボタンが多いため折り返しを許可 */
@@ -47,7 +46,6 @@ header {
     z-index: 1000; /* 他の要素より手前に表示 */
 }
 
-/* ★★★ 修正点: ボタンのスタイルを調整 ★★★ */
 .btn {
     font-size: 14px;
     padding: 8px 16px;
@@ -62,13 +60,11 @@ header {
 .btn:active {
     background-color: #cccccc; /* クリック時の色 */
 }
-/* ★★★ 追加: 選択中のボタンのスタイル ★★★ */
 .btn.active {
     background-color: #a9a9a9; /* 選択中の色 */
     font-weight: bold;
     color: #000;
 }
-/* ★★★ 追加: ローディング中のボタンスタイル ★★★ */
 .btn.loading {
     background-color: #cccccc;
     color: #666;
@@ -176,7 +172,6 @@ header {
     vertical-align: middle;
 }
 
-/* ★★★ 修正点: 集計フィルターのレイアウトをFlexboxで整列 ★★★ */
 .filter-container {
     border: 1px solid #ccc;
     padding: 15px;
@@ -208,7 +203,6 @@ header {
 }
 
 
-/* ★★★ 追加: ローディング表示のスタイル ★★★ */
 #loading-overlay {
     position: fixed;
     top: 0;
@@ -236,7 +230,6 @@ header {
     100% { transform: rotate(360deg); }
 }
 
-/* ★★★ 追加: 通知ボックスのスタイル ★★★ */
 #notification-box {
     position: fixed;
     top: 80px; /* ヘッダーの下に表示 */
@@ -261,7 +254,6 @@ header {
     background-color: #dc3545;
 }
 
-/* ★★★ 追加: トップへ戻るボタンのスタイル ★★★ */
 #back-to-top {
     position: fixed;
     bottom: 20px;
@@ -282,6 +274,17 @@ header {
     background-color: #333;
 }
 
+/* --- 発注点リストのスタイル --- */
+.reorder-yj-alert > th {
+    background-color: #fff0f0; /* 薄い赤 */
+    font-weight: bold;
+}
+.reorder-pkg-alert {
+    background-color: #fffff0; /* 薄い黄 */
+}
+.reorder-pkg-alert > td {
+    font-weight: bold;
+}
 
 /* --- 印刷専用スタイル --- */
 @media print {
@@ -343,4 +346,27 @@ header {
         -webkit-print-color-adjust: exact;
         print-color-adjust: exact;
     }
+}
+
+/* ▼▼▼ ファイルの末尾に以下を追記 ▼▼▼ */
+.accordion-trigger {
+    cursor: pointer;
+    position: relative;
+    user-select: none;
+}
+.accordion-trigger:hover > th {
+    background-color: #e9ecef !important;
+}
+.accordion-trigger::before {
+    content: '▶';
+    position: absolute;
+    left: 8px;
+    top: 50%;
+    transform: translateY(-50%);
+    font-size: 12px;
+    color: #333;
+    transition: transform 0.2s ease;
+}
+.accordion-trigger.expanded::before {
+    transform: translateY(-50%) rotate(90deg);
 }

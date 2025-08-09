@@ -1,24 +1,22 @@
-// File: static/js/master_edit.js (Corrected)
+// File: static/js/master_edit.js (Corrected and Finalized)
+import { initModal, showModal } from './inout_modal.js';
 
 // --- Global variables and DOM elements ---
 const view = document.getElementById('master-edit-view');
 const refreshBtn = document.getElementById('refreshMastersBtn');
 const addMasterRowBtn = document.getElementById('addMasterRowBtn');
-const tableHead = document.querySelector('#master-edit-table thead');
 const tableBody = document.querySelector('#master-edit-table tbody');
+const tableHead = document.querySelector('#master-edit-table thead');
 
-// TANI.CSV data replacement
-const taniMap = {
-    "11": "包", "13": "本", "30": "錠", "33": "ｇ", "34": "ｍＬ", "43": "個",
-};
+let unitMap = {}; // TANI.CSVから読み込んだ単位情報を格納する
 
-// Header definitions
+// ヘッダー定義
 const upperHeaders = [
     { key: 'productCode', name: 'JC000(JANコード)', type: 'text' },
     { key: 'productName', name: 'JC018(製品名)', type: 'text' },
     { key: 'makerName', name: 'JC030(メーカー名)', type: 'text' },
     { key: 'janPackUnitQty', name: 'JA008(JAN包装数量)', type: 'number' },
-    { key: 'janUnitCode', name: 'JA007(JAN単位)', type: 'text' },
+    { key: 'janUnitCode', name: 'JA007(JAN単位)', type: 'select' },
     { key: 'janPackInnerQty', name: 'JA006(内包装数量)', type: 'number' },
     { key: 'flagPoison', name: 'JC061(毒薬)', type: 'select', options: [0, 1] },
     { key: 'flagDeleterious', name: 'JC062(劇薬)', type: 'select', options: [0, 1] },
@@ -36,52 +34,81 @@ const lowerHeaders = [
     { key: 'flagStimulantRaw', name: 'JC066(覚醒剤原料)', type: 'select', options: [0, 1] },
 ];
 
+const rowHeaderHTML = `
+    <tr class="repeated-header">
+        ${upperHeaders.map(h => `<th>${h.name}</th>`).join('')}
+        <th rowspan="2">組み立てた包装</th>
+        <th rowspan="2">操作</th>
+    </tr>
+    <tr class="repeated-header">
+        ${lowerHeaders.map(h => `<th>${h.name}</th>`).join('')}
+    </tr>
+`;
+
 /**
- * Resolves a unit code to its Japanese name.
+ * バックエンドから単位マスタを取得する
  */
-function resolveTaniName(code) {
-    return taniMap[code] || code;
+async function fetchUnitMap() {
+    try {
+        const res = await fetch('/api/units/map');
+        if (!res.ok) throw new Error('単位マスタの取得に失敗');
+        unitMap = await res.json();
+    } catch (err) {
+        console.error(err);
+        alert(err.message);
+    }
 }
 
 /**
- * Assembles and displays the packaging string for a given row.
- * @param {HTMLTableRowElement} upperRow - The upper row of the record.
+ * 組み立てた包装文字列を表示する (バグ修正版)
+ * @param {HTMLTableRowElement} upperRow - レコードの上段の行
  */
 function formatPackageSpecForRow(upperRow) {
     const lowerRow = upperRow.nextElementSibling;
-    if (!lowerRow) return;
+    if (!lowerRow || !upperRow.hasAttribute('data-product-code')) return;
 
     const jc037 = lowerRow.querySelector('input[name="packageSpec"]').value;
     const jc044 = lowerRow.querySelector('input[name="yjPackUnitQty"]').value;
-    const jc039_code = lowerRow.querySelector('input[name="yjUnitName"]').value;
+    const jc039_name = lowerRow.querySelector('input[name="yjUnitName"]').value;
     const ja006 = upperRow.querySelector('input[name="janPackInnerQty"]').value;
     const ja008 = upperRow.querySelector('input[name="janPackUnitQty"]').value;
-    const ja007_code = upperRow.querySelector('input[name="janUnitCode"]').value;
+    const ja007_code = upperRow.querySelector('select[name="janUnitCode"]').value;
 
-    const yjUnitName = resolveTaniName(jc039_code);
-    let pkg = `${jc037} ${jc044}${yjUnitName}`;
+    let pkg = `${jc037} ${jc044}${jc039_name}`;
     
     if (ja006 && ja008) {
         let janUnitName = '';
-        if (ja007_code && ja007_code !== '0') {
-            janUnitName = resolveTaniName(ja007_code);
+        if (ja007_code === '0' || !ja007_code) {
+            janUnitName = jc039_name;
+        } else {
+            janUnitName = unitMap[ja007_code] || ja007_code;
         }
-        pkg += ` (${ja006}${yjUnitName}×${ja008}${janUnitName})`;
+        pkg += ` (${ja006}${jc039_name}×${ja008}${janUnitName})`;
     }
     
     upperRow.querySelector('.package-spec-result').textContent = pkg;
 }
 
 /**
- * Creates the HTML for a two-row master record.
- * @param {object} master - The master data record.
- * @returns {string} - The HTML string for the two table rows.
+ * 1品目分のHTML（ヘッダー2行＋データ2行）を生成する (バグ修正・機能追加版)
+ * @param {object} master - マスターデータレコード
+ * @returns {string} - 4つの<tr>要素からなるHTML文字列
  */
 function createMasterRowHTML(master = {}) {
-    let upperHtml = '<tr>';
+    let upperHtml = `<tr data-product-code="${master.productCode || 'new'}">`;
     upperHeaders.forEach(h => {
-        const value = master[h.key] ?? ''; // Use ?? to handle null/undefined
-        if (h.type === 'select') {
+        const value = master[h.key] ?? '';
+        if (h.key === 'janUnitCode') {
+            const displayUnitMap = { ...unitMap };
+            if (!displayUnitMap['0']) {
+                displayUnitMap['0'] = '(YJ単位と同じ)';
+            }
+            let options = '';
+            for (const [code, name] of Object.entries(displayUnitMap)) {
+                options += `<option value="${code}" ${code == value ? 'selected' : ''}>${code}: ${name}</option>`;
+            }
+            upperHtml += `<td><select name="${h.key}">${options}</select></td>`;
+        } else if (h.type === 'select') {
             let options = h.options.map(o => `<option value="${o}" ${o == value ? 'selected' : ''}>${o}</option>`).join('');
             upperHtml += `<td><select name="${h.key}">${options}</select></td>`;
         } else {
@@ -89,14 +116,17 @@ function createMasterRowHTML(master = {}) {
         }
     });
     upperHtml += `<td rowspan="2" class="package-spec-result"></td>`;
-    upperHtml += `<td rowspan="2"><button class="save-master-row-btn">保存</button></td>`;
+    upperHtml += `<td rowspan="2">
+                    <button class="save-master-row-btn">保存</button>
+                    <button class="quote-jcshms-btn">JCSHMSから引用</button>
+                  </td>`;
     upperHtml += '</tr>';
 
     let lowerHtml = '<tr>';
     lowerHeaders.forEach(h => {
         const value = master[h.key] ?? '';
         if (h.type === 'select') {
-             let options = h.options.map(o => `<option value="${o}" ${o == value ? 'selected' : ''}>${o}</option>`).join('');
+            let options = h.options.map(o => `<option value="${o}" ${o == value ? 'selected' : ''}>${o}</option>`).join('');
             lowerHtml += `<td><select name="${h.key}">${options}</select></td>`;
         } else {
             lowerHtml += `<td><input type="${h.type}" name="${h.key}" value="${value}" step="any"></td>`;
@@ -104,11 +134,12 @@ function createMasterRowHTML(master = {}) {
     });
     lowerHtml += '</tr>';
 
-    return upperHtml + lowerHtml;
+    return rowHeaderHTML + upperHtml + lowerHtml;
 }
 
-
-// ▼▼▼ 修正点: リセット関数をエクスポート ▼▼▼
+/**
+ * マスター編集画面の表示をリセット（クリア）する
+ */
 export function resetMasterEditView() {
     if (tableBody) {
         tableBody.innerHTML = '';
@@ -116,7 +147,7 @@ export function resetMasterEditView() {
 }
 
 /**
- * Fetches and renders master data into the table.
+ * DBからマスターデータを取得してテーブルに描画する
  */
 async function loadAndRenderMasters() {
     tableBody.innerHTML = `<tr><td colspan="${upperHeaders.length + 2}">読み込み中...</td></tr>`;
@@ -131,8 +162,7 @@ async function loadAndRenderMasters() {
         }
 
         tableBody.innerHTML = masters.map(createMasterRowHTML).join('');
-        tableBody.querySelectorAll('tr:nth-child(odd)').forEach(formatPackageSpecForRow);
-
+        tableBody.querySelectorAll('tr[data-product-code]').forEach(formatPackageSpecForRow);
     } catch (err) {
         console.error(err);
         tableBody.innerHTML = `<tr><td colspan="${upperHeaders.length + 2}" style="color:red;">${err.message}</td></tr>`;
@@ -140,35 +170,91 @@ async function loadAndRenderMasters() {
 }
 
 /**
- * Initializes the master edit view.
+ * JCSHMSからの引用データをフォームに反映させるコールバック関数
+ * @param {object} selectedProduct - モーダルで選択された製品データ
+ * @param {HTMLTableRowElement} activeRow - 引用ボタンが押された行（上段）
  */
-export function initMasterEdit() {
+function populateFormWithJcshms(selectedProduct, activeRow) {
+    const lowerRow = activeRow.nextElementSibling;
+    if (!lowerRow) return;
+
+    // 製品コード(JAN)は元のレコードのものを維持するため、更新しない
+    // activeRow.querySelector('[name="productCode"]').value = selectedProduct.productCode;
+
+    // 上段のフォームを更新
+    activeRow.querySelector('[name="productName"]').value = selectedProduct.productName || '';
+    activeRow.querySelector('[name="makerName"]').value = selectedProduct.makerName || '';
+    activeRow.querySelector('[name="janPackUnitQty"]').value = selectedProduct.janPackUnitQty || 0;
+    activeRow.querySelector('[name="janUnitCode"]').value = selectedProduct.janUnitCode || 0;
+    activeRow.querySelector('[name="janPackInnerQty"]').value = selectedProduct.janPackInnerQty || 0;
+    activeRow.querySelector('[name="flagPoison"]').value = selectedProduct.flagPoison || 0;
+    activeRow.querySelector('[name="flagDeleterious"]').value = selectedProduct.flagDeleterious || 0;
+    activeRow.querySelector('[name="flagNarcotic"]').value = selectedProduct.flagNarcotic || 0;
+    
+    // 下段のフォームを更新
+    lowerRow.querySelector('[name="yjCode"]').value = selectedProduct.yjCode || '';
+    lowerRow.querySelector('[name="kanaName"]').value = selectedProduct.kanaName || '';
+    lowerRow.querySelector('[name="packageSpec"]').value = selectedProduct.packageSpec || '';
+    lowerRow.querySelector('[name="yjPackUnitQty"]').value = selectedProduct.yjPackUnitQty || 0;
+    lowerRow.querySelector('[name="yjUnitName"]').value = selectedProduct.yjUnitName || '';
+    lowerRow.querySelector('[name="nhiPrice"]').value = selectedProduct.nhiPrice || 0;
+    lowerRow.querySelector('[name="flagPsychotropic"]').value = selectedProduct.flagPsychotropic || 0;
+    lowerRow.querySelector('[name="flagStimulant"]').value = selectedProduct.flagStimulant || 0;
+    lowerRow.querySelector('[name="flagStimulantRaw"]').value = selectedProduct.flagStimulantRaw || 0;
+
+    // 包装表示を更新
+    formatPackageSpecForRow(activeRow);
+}
+
+/**
+ * イベントの発生源から、対応するデータ行（上段）を見つけ出すためのヘルパー関数
+ * @param {EventTarget} target
+ * @returns {HTMLTableRowElement|null}
+ */
+function getUpperDataRowFromTarget(target) {
+    const anyRow = target.closest('tr');
+    if (!anyRow) return null;
+    // 自身がデータ行（上段）の場合
+    if (anyRow.hasAttribute('data-product-code')) {
+        return anyRow;
+    }
+    // 自身がデータ行（下段）の場合、兄要素（上段）を返す
+    const prevRow = anyRow.previousElementSibling;
+    if (prevRow && prevRow.hasAttribute('data-product-code')) {
+        return prevRow;
+    }
+    return null;
+}
+
+/**
+ * マスター編集画面の初期化処理
+ */
+export async function initMasterEdit() {
     if (!view) return;
 
-    let headerHtml = '<tr>';
-    upperHeaders.forEach(h => headerHtml += `<th>${h.name}</th>`);
-    headerHtml += `<th rowspan="2">組み立てた包装</th><th rowspan="2">保存</th></tr>`;
-    headerHtml += '<tr>';
-    lowerHeaders.forEach(h => headerHtml += `<th>${h.name}</th>`);
-    headerHtml += '</tr>';
-    tableHead.innerHTML = headerHtml;
+    await fetchUnitMap();
+    tableHead.innerHTML = '';
+    initModal(populateFormWithJcshms);
 
     refreshBtn.addEventListener('click', loadAndRenderMasters);
-    
     addMasterRowBtn.addEventListener('click', () => {
         tableBody.insertAdjacentHTML('beforeend', createMasterRowHTML());
     });
-
+    
     tableBody.addEventListener('input', (event) => {
-        if (event.target.tagName === 'INPUT' || event.target.tagName === 'SELECT') {
-            const upperRow = event.target.closest('tr:nth-child(odd), tr:nth-child(even)').previousElementSibling || event.target.closest('tr');
+        const upperRow = getUpperDataRowFromTarget(event.target);
+        if (upperRow) {
             formatPackageSpecForRow(upperRow);
         }
     });
 
     tableBody.addEventListener('click', async (event) => {
-        if (event.target.classList.contains('save-master-row-btn')) {
-            const upperRow = event.target.closest('tr');
+        const target = event.target;
+        const upperRow = getUpperDataRowFromTarget(target);
+        if (!upperRow) return;
+
+        // 保存ボタンの処理
+        if (target.classList.contains('save-master-row-btn')) {
             const lowerRow = upperRow.nextElementSibling;
             
             const data = { origin: 'MANUAL_ENTRY' };
@@ -180,17 +266,10 @@ export function initMasterEdit() {
                 return;
             }
 
-            // *** CORRECTED: Explicitly convert all numeric fields ***
             const floatFields = ['yjPackUnitQty', 'nhiPrice', 'reorderPoint', 'janPackInnerQty', 'janPackUnitQty'];
             const intFields = ['janUnitCode', 'flagPoison', 'flagDeleterious', 'flagNarcotic', 'flagPsychotropic', 'flagStimulant', 'flagStimulantRaw'];
-
-            floatFields.forEach(key => {
-                data[key] = parseFloat(data[key]) || 0;
-            });
-            intFields.forEach(key => {
-                data[key] = parseInt(data[key], 10) || 0;
-            });
-            // *** END CORRECTION ***
+            floatFields.forEach(key => data[key] = parseFloat(data[key]) || 0);
+            intFields.forEach(key => data[key] = parseInt(data[key], 10) || 0);
 
             try {
                 const res = await fetch('/api/master/update', {
@@ -203,16 +282,17 @@ export function initMasterEdit() {
                 
                 alert(resData.message);
                 loadAndRenderMasters();
-
             } catch (err) {
                 console.error(err);
                 alert(`エラー: ${err.message}`);
             }
         }
+        
+        // JCSHMSから引用ボタンの処理
+        if (target.classList.contains('quote-jcshms-btn')) {
+            showModal(upperRow);
+        }
     });
 
-    // ▼▼▼ 修正点: 起動時の読み込みをリセット関数で行う ▼▼▼
-    resetMasterEditView();
-    loadAndRenderMasters(); 
-
+    loadAndRenderMasters();
 }

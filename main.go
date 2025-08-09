@@ -1,4 +1,4 @@
-// File: main.go
+// File: main.go (Corrected)
 package main
 
 import (
@@ -13,7 +13,6 @@ import (
 	"karashi/inventory"
 	"karashi/loader"
 	"karashi/masteredit"
-	"karashi/monthend" // 新しいパッケージを追加
 	"karashi/transaction"
 	"karashi/units"
 	"karashi/updatemaster"
@@ -69,12 +68,9 @@ func main() {
 	if err := loader.InitDatabase(conn); err != nil {
 		log.Fatalf("master init failed: %v", err)
 	}
-	// ▼▼▼ ここから追加 ▼▼▼
-	// データベース内のYJコードの最大値からシーケンスを初期化
 	if err := db.InitializeSequenceFromMaxYjCode(conn); err != nil {
 		log.Fatalf("failed to initialize sequence from max yj_code: %v", err)
 	}
-	// ▲▲▲ ここまで追加 ▲▲▲
 	if _, err := units.LoadTANIFile("SOU/TANI.CSV"); err != nil {
 		log.Fatalf("tani init failed: %v", err)
 	}
@@ -118,6 +114,7 @@ func main() {
 	mux.HandleFunc("/api/master/update-jcshms", updatemaster.JCSHMSUpdateHandler(conn))
 
 	// Handlers from dedicated packages
+	mux.HandleFunc("/api/units/map", units.GetTaniMapHandler()) // この行を追加
 	mux.Handle("/api/dat/upload", dat.UploadDatHandler(conn))
 	mux.Handle("/api/usage/upload", usage.UploadUsageHandler(conn))
 	mux.Handle("/api/inout/save", inout.SaveInOutHandler(conn))
@@ -131,8 +128,6 @@ func main() {
 	mux.HandleFunc("/api/products/import", backup.ImportProductsHandler(conn))
 	mux.HandleFunc("/api/aggregation", aggregation.GetAggregationHandler(conn))
 	mux.HandleFunc("/api/transactions/reprocess", transaction.ReProcessTransactionsHandler(conn))
-	mux.HandleFunc("/api/inventory/months", monthend.GetAvailableMonthsHandler(conn))
-	mux.HandleFunc("/api/inventory/calculate", monthend.CalculateMonthEndInventoryHandler(conn))
 
 	// Static file and root handler
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("./static"))))

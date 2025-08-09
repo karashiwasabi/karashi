@@ -11,12 +11,10 @@ export function resetDatUploadView() {
 
 export function initDatUpload() {
     if (!datBtn || !datInput || !uploadContainer) return;
-
     // ★★★ 修正点: このファイル内のクリックイベントリスナーを削除 ★★★
     // datBtn.addEventListener('click', () => {
     //     datInput.click();
     // });
-
     datInput.addEventListener('change', async e => {
         if (!e.target.files.length) return;
         const tbody = document.querySelector('#upload-output-table tbody');

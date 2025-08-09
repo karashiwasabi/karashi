@@ -113,7 +113,6 @@ export async function setupClientDropdown(selectEl) {
     const res = await fetch('/api/clients');
     if (!res.ok) throw new Error('Failed to fetch clients');
     const clients = await res.json();
-
     if (clients) {
       clients.forEach(c => {
         const opt = document.createElement('option');

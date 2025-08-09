@@ -3,7 +3,6 @@
 export function initReprocessButton() {
     const reprocessBtn = document.getElementById('reprocessBtn');
     if (!reprocessBtn) return;
-
     reprocessBtn.addEventListener('click', async () => {
         if (!confirm('仮登録状態の取引データを、最新のマスター情報で更新します。よろしいですか？')) {
             return;

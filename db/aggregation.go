@@ -1,16 +1,18 @@
-// File: db/aggregation.go (修正後の完全なコード)
+// File: db/aggregation.go (Corrected and Finalized)
 package db
 
 import (
 	"database/sql"
 	"fmt"
 	"karashi/model"
+	"karashi/units"
+	"sort"
 	"strings"
 )
 
-// GetAggregatedTransactions はフィルターに基づいて集計結果を返します
-func GetAggregatedTransactions(conn *sql.DB, filters model.AggregationFilters) ([]model.YJGroup, error) {
-	// --- Step 1: マスター関連のフィルターで製品リストを作成 ---
+// GetStockLedger はフィルターに基づいて在庫台帳と発注点情報を生成します
+func GetStockLedger(conn *sql.DB, filters model.AggregationFilters) ([]model.StockLedgerYJGroup, error) {
+	// --- Step 1: マスター関連のフィルターで対象となる製品リストを作成 ---
 	masterQuery := `SELECT ` + selectColumns + ` FROM product_master p WHERE 1=1 `
 	masterArgs := []interface{}{}
 
@@ -37,184 +39,216 @@ func GetAggregatedTransactions(conn *sql.DB, filters model.AggregationFilters) (
 
 	masterRows, err := conn.Query(masterQuery, masterArgs...)
 	if err != nil {
-		return nil, fmt.Errorf("aggregation master query failed: %w", err)
+		return nil, fmt.Errorf("ledger master query failed: %w", err)
 	}
 	defer masterRows.Close()
 
-	var allMasters []*model.ProductMaster
-	productCodes := []string{}
+	mastersByYjCode := make(map[string][]*model.ProductMaster)
+	var productCodes []string
 	productCodeSet := make(map[string]struct{})
-
 	for masterRows.Next() {
 		m, err := scanProductMaster(masterRows)
 		if err != nil {
 			return nil, err
 		}
-		allMasters = append(allMasters, m)
+		if m.YjCode != "" {
+			mastersByYjCode[m.YjCode] = append(mastersByYjCode[m.YjCode], m)
+		}
 		if _, ok := productCodeSet[m.ProductCode]; !ok {
 			productCodeSet[m.ProductCode] = struct{}{}
 			productCodes = append(productCodes, m.ProductCode)
 		}
 	}
-	if len(allMasters) == 0 {
-		return []model.YJGroup{}, nil
+	if len(productCodes) == 0 {
+		return []model.StockLedgerYJGroup{}, nil
 	}
 
-	// --- Step 2: 期間フィルターでトランザクションを取得し、製品コードごとにまとめる ---
+	// --- Step 2: 期間フィルターで関連する全トランザクションを正しい順序で取得 ---
+	transactionQuery := `SELECT ` + TransactionColumns + ` FROM transaction_records
+		WHERE jan_code IN (?` + strings.Repeat(",?", len(productCodes)-1) + `)`
+	txArgs := []interface{}{}
+	for _, pc := range productCodes {
+		txArgs = append(txArgs, pc)
+	}
+	if filters.StartDate != "" {
+		transactionQuery += " AND transaction_date >= ? "
+		txArgs = append(txArgs, filters.StartDate)
+	}
+	if filters.EndDate != "" {
+		transactionQuery += " AND transaction_date <= ? "
+		txArgs = append(txArgs, filters.EndDate)
+	}
+	transactionQuery += " ORDER BY transaction_date, flag, id"
+
+	txRows, err := conn.Query(transactionQuery, txArgs...)
+	if err != nil {
+		return nil, fmt.Errorf("ledger transaction query failed: %w", err)
+	}
+	defer txRows.Close()
+
 	transactionsByProductCode := make(map[string][]*model.TransactionRecord)
-	if len(productCodes) > 0 {
-		transactionQuery := `SELECT ` + TransactionColumns + ` FROM transaction_records
-			WHERE jan_code IN (?` + strings.Repeat(",?", len(productCodes)-1) + `)`
-
-		txArgs := []interface{}{}
-		for _, pc := range productCodes {
-			txArgs = append(txArgs, pc)
-		}
-
-		if filters.StartDate != "" {
-			transactionQuery += " AND transaction_date >= ?"
-			txArgs = append(txArgs, filters.StartDate)
-		}
-		if filters.EndDate != "" {
-			transactionQuery += " AND transaction_date <= ?"
-			txArgs = append(txArgs, filters.EndDate)
-		}
-
-		transactionQuery += " ORDER BY transaction_date"
-
-		txRows, err := conn.Query(transactionQuery, txArgs...)
+	for txRows.Next() {
+		t, err := ScanTransactionRecord(txRows)
 		if err != nil {
-			return nil, fmt.Errorf("aggregation transaction query failed: %w", err)
+			return nil, err
 		}
-		defer txRows.Close()
-
-		for txRows.Next() {
-			t, err := ScanTransactionRecord(txRows)
-			if err != nil {
-				return nil, err
-			}
-			transactionsByProductCode[t.JanCode] = append(transactionsByProductCode[t.JanCode], t)
-		}
+		transactionsByProductCode[t.JanCode] = append(transactionsByProductCode[t.JanCode], t)
 	}
 
-	// --- Step 3: YJコード -> 包装表記 の階層でグループを正しく統合 ---
-	yjGroupMap := make(map[string]*model.YJGroup)
-
-	for _, m := range allMasters {
-		if m.YjCode == "" {
-			continue
+	// --- Step 3: グループ化と各種計算 ---
+	var result []model.StockLedgerYJGroup
+	for yjCode, masters := range mastersByYjCode {
+		yjGroup := model.StockLedgerYJGroup{
+			YjCode:         yjCode,
+			ProductName:    masters[0].ProductName,
+			YjUnitName:     units.ResolveName(masters[0].YjUnitName), // ★ 追加
+			PackageLedgers: []model.StockLedgerPackageGroup{},
 		}
+		var yjTotalStart, yjTotalEnd, yjTotalReorderPoint float64
+		var isYjReorderNeeded bool
 
-		if _, ok := yjGroupMap[m.YjCode]; !ok {
-			yjGroupMap[m.YjCode] = &model.YJGroup{
-				YjCode:        m.YjCode,
-				ProductName:   m.ProductName,
-				PackageGroups: []model.PackageGroup{},
+		txsByPackage := make(map[string][]*model.TransactionRecord)
+
+		for _, master := range masters {
+			packageKey := fmt.Sprintf("%s|%f|%s", master.PackageSpec, master.JanPackInnerQty, master.YjUnitName)
+			if txs, ok := transactionsByProductCode[master.ProductCode]; ok {
+				txsByPackage[packageKey] = append(txsByPackage[packageKey], txs...)
 			}
 		}
 
-		packageKey := fmt.Sprintf("%s %.2f%s", m.PackageSpec, m.JanPackInnerQty, m.YjUnitName)
-		var targetPkg *model.PackageGroup
-
-		for i := range yjGroupMap[m.YjCode].PackageGroups {
-			if yjGroupMap[m.YjCode].PackageGroups[i].PackageKey == packageKey {
-				targetPkg = &yjGroupMap[m.YjCode].PackageGroups[i]
-				break
-			}
-		}
-
-		if targetPkg == nil {
-			newPkg := model.PackageGroup{
-				PackageKey:   packageKey,
-				Transactions: []model.TransactionRecord{},
-			}
-			yjGroupMap[m.YjCode].PackageGroups = append(yjGroupMap[m.YjCode].PackageGroups, newPkg)
-			targetPkg = &yjGroupMap[m.YjCode].PackageGroups[len(yjGroupMap[m.YjCode].PackageGroups)-1]
-		}
-
-		if transactions, ok := transactionsByProductCode[m.ProductCode]; ok {
-			for _, t := range transactions {
-				targetPkg.Transactions = append(targetPkg.Transactions, *t)
-			}
-		}
-	}
-
-	// --- Step 4: 集計計算 ---
-	var result []model.YJGroup
-	for _, yjGroup := range yjGroupMap {
-		// まず包装(PackageGroup)ごとの小計を計算
-		for i := range yjGroup.PackageGroups {
-			pkgGroup := &yjGroup.PackageGroups[i]
-			for _, t := range pkgGroup.Transactions {
-				var signedJanQty, signedYjQty float64
-
-				if t.Flag == 2 || t.Flag == 3 || t.Flag == 12 {
-					signedJanQty = -t.JanQuantity
-					signedYjQty = -t.YjQuantity
-				} else if t.Flag == 1 || t.Flag == 11 || t.Flag == 4 {
-					signedJanQty = t.JanQuantity
-					signedYjQty = t.YjQuantity
-				} else if t.Flag == 5 {
-					signedJanQty = -t.JanQuantity
-					signedYjQty = -t.YjQuantity
+		for _, txs := range txsByPackage {
+			sort.Slice(txs, func(i, j int) bool {
+				t1 := txs[i]
+				t2 := txs[j]
+				if t1.TransactionDate != t2.TransactionDate {
+					return t1.TransactionDate < t2.TransactionDate
 				}
+				if t1.Flag != t2.Flag {
+					return t1.Flag < t2.Flag
+				}
+				return t1.ID < t2.ID
+			})
+		}
 
-				pkgGroup.TotalJanQty += signedJanQty
-				pkgGroup.TotalYjQty += signedYjQty
+		for key, txs := range txsByPackage {
+			var janUnitName string
+			if len(txs) > 0 {
+				janUnitName = txs[0].JanUnitName
+			}
 
-				if t.Flag == 3 {
-					if -signedYjQty > pkgGroup.MaxUsageYjQty {
-						pkgGroup.MaxUsageYjQty = -signedYjQty
-					}
-					if -t.JanQuantity > pkgGroup.MaxUsageJanQty {
-						pkgGroup.MaxUsageJanQty = -t.JanQuantity
+			pkgLedger := model.StockLedgerPackageGroup{
+				PackageKey:   key,
+				JanUnitName:  janUnitName, // ★ 追加
+				Transactions: []model.LedgerTransaction{},
+			}
+			var pkgStartingBalance, pkgEndingBalance, pkgNetChange, currentBalance float64
+
+			if len(txs) > 0 {
+				firstInventoryDate := ""
+				firstInventoryIndex := -1
+				for i, t := range txs {
+					if t.Flag == 0 {
+						firstInventoryDate = t.TransactionDate
+						firstInventoryIndex = i
+						break
 					}
 				}
+
+				if firstInventoryIndex != -1 {
+					inventorySum := 0.0
+					for _, t := range txs {
+						if t.TransactionDate == firstInventoryDate && t.Flag == 0 {
+							inventorySum += t.YjQuantity
+						}
+					}
+					pkgStartingBalance = inventorySum
+					currentBalance = 0
+
+					isAfterInventory := false
+					for _, t := range txs {
+						if !isAfterInventory && t.TransactionDate < firstInventoryDate {
+							pkgLedger.Transactions = append(pkgLedger.Transactions, model.LedgerTransaction{TransactionRecord: *t, RunningBalance: 0})
+							continue
+						}
+
+						if t.TransactionDate == firstInventoryDate && t.Flag == 0 {
+							isAfterInventory = true
+						}
+
+						if isAfterInventory {
+							if t.TransactionDate == firstInventoryDate && t.Flag == 0 {
+								currentBalance += t.YjQuantity
+							} else {
+								var signedYjQty float64
+								switch t.Flag {
+								case 2, 3, 5, 12:
+									signedYjQty = -t.YjQuantity
+								case 1, 4, 11:
+									signedYjQty = t.YjQuantity
+								}
+								currentBalance += signedYjQty
+							}
+						}
+						pkgLedger.Transactions = append(pkgLedger.Transactions, model.LedgerTransaction{TransactionRecord: *t, RunningBalance: currentBalance})
+					}
+					pkgEndingBalance = currentBalance
+				} else {
+					firstTx := txs[0]
+					var firstTxChange float64
+					switch firstTx.Flag {
+					case 2, 3, 5, 12:
+						firstTxChange = -firstTx.YjQuantity
+					case 1, 4, 11:
+						firstTxChange = firstTx.YjQuantity
+					}
+					currentBalance = 0 - firstTxChange
+					pkgStartingBalance = currentBalance
+
+					for _, t := range txs {
+						var signedYjQty float64
+						switch t.Flag {
+						case 2, 3, 5, 12:
+							signedYjQty = -t.YjQuantity
+						case 1, 4, 11:
+							signedYjQty = t.YjQuantity
+						}
+						currentBalance += signedYjQty
+						pkgLedger.Transactions = append(pkgLedger.Transactions, model.LedgerTransaction{TransactionRecord: *t, RunningBalance: currentBalance})
+					}
+					pkgEndingBalance = currentBalance
+				}
+				pkgNetChange = pkgEndingBalance - pkgStartingBalance
 			}
-		}
 
-		// ▼▼▼ 修正点: YJGroup(大グループ)の合計値を計算する処理を追加 ▼▼▼
-		// 包装ごとの小計を、大グループの合計に足し上げていく
-		for _, pg := range yjGroup.PackageGroups {
-			yjGroup.TotalJanQty += pg.TotalJanQty
-			yjGroup.TotalYjQty += pg.TotalYjQty
-			if pg.MaxUsageYjQty > yjGroup.MaxUsageYjQty {
-				yjGroup.MaxUsageYjQty = pg.MaxUsageYjQty
-			}
-		}
-		// ▲▲▲ ここまで ▲▲▲
+			pkgLedger.StartingBalance, pkgLedger.NetChange, pkgLedger.EndingBalance = pkgStartingBalance, pkgNetChange, pkgEndingBalance
 
-		result = append(result, *yjGroup)
-	}
-
-	// --- Step 5: 「動きのない品目」フィルターを適用 ---
-	var filteredResult []model.YJGroup
-	for _, yjGroup := range result {
-		hasPrescription := false
-		totalTransactions := 0
-		for _, pg := range yjGroup.PackageGroups {
-			totalTransactions += len(pg.Transactions)
-			for _, t := range pg.Transactions {
+			var maxUsage float64
+			for _, t := range txs {
 				if t.Flag == 3 {
-					hasPrescription = true
-					break
+					if t.YjQuantity > maxUsage {
+						maxUsage = t.YjQuantity
+					}
 				}
 			}
-			if hasPrescription {
-				break
+			reorderPoint := maxUsage * filters.Coefficient
+			pkgLedger.MaxUsage, pkgLedger.ReorderPoint = maxUsage, reorderPoint
+			pkgLedger.IsReorderNeeded = pkgLedger.EndingBalance < reorderPoint && maxUsage > 0
+
+			yjGroup.PackageLedgers = append(yjGroup.PackageLedgers, pkgLedger)
+			yjTotalStart += pkgLedger.StartingBalance
+			yjTotalEnd += pkgLedger.EndingBalance
+			yjTotalReorderPoint += pkgLedger.ReorderPoint
+			if pkgLedger.IsReorderNeeded {
+				isYjReorderNeeded = true
 			}
 		}
 
-		if filters.NoMovement {
-			if !hasPrescription {
-				filteredResult = append(filteredResult, yjGroup)
-			}
-		} else {
-			if totalTransactions > 0 {
-				filteredResult = append(filteredResult, yjGroup)
-			}
+		if len(yjGroup.PackageLedgers) > 0 {
+			yjGroup.StartingBalance, yjGroup.EndingBalance, yjGroup.NetChange = yjTotalStart, yjTotalEnd, yjTotalEnd-yjTotalStart
+			yjGroup.TotalReorderPoint = yjTotalReorderPoint
+			yjGroup.IsReorderNeeded = isYjReorderNeeded
+			result = append(result, yjGroup)
 		}
 	}
-
-	return filteredResult, nil
+	return result, nil
 }

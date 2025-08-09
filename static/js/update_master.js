@@ -43,11 +43,9 @@ export function initUpdateMaster() {
                     <table class="data-table">
                         <thead><tr><th>JANコード</th><th>製品名</th></tr></thead>
                         <tbody>`;
-            
             resData.updatedProducts.forEach(p => {
                 resultHTML += `<tr><td>${p.janCode}</td><td class="left">${p.productName}</td></tr>`;
             });
-
             resultHTML += `</tbody></table></div>`;
             resultContainer.innerHTML = resultHTML;
 

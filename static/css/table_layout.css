@@ -33,8 +33,10 @@
 /* ★★★ 修正点: テーブルヘッダーのスティッキー設定を完全に削除 ★★★ */
 
 
+/* ▼▼▼ ここを修正: input[type="number"] をセレクターに追加 ▼▼▼ */
 .data-table td input[type="text"],
 .data-table td input[type="date"],
+.data-table td input[type="number"],
 .data-table td select {
     width: 100%;
     border: 1px solid #999;
@@ -43,6 +45,7 @@
     box-sizing: border-box;
     background-color: #fff;
 }
+/* ▲▲▲ ここまで修正 ▲▲▲ */
 
 .data-table td input.highlight-search {
     background-color: #fffacd; /* 薄い黄色 */

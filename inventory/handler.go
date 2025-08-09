@@ -1,3 +1,4 @@
+// File: inventory/handler.go (修正後)
 package inventory
 
 import (
@@ -6,7 +7,6 @@ import (
 	"fmt"
 	"karashi/central"
 	"karashi/db"
-	"karashi/model"
 	"net/http"
 )
 
@@ -31,27 +31,10 @@ func UploadInventoryHandler(conn *sql.DB) http.HandlerFunc {
 			return
 		}
 
-		// ファイルから読み取ったデータをJANコード(または製品名)単位で集計
-		aggregatedData := make(map[string]model.UnifiedInputRecord)
-		for _, row := range parsedData.Records {
-			key := row.JanCode
-			if key == "" || key == "0000000000000" {
-				key = fmt.Sprintf("9999999999999%s", row.ProductName)
-			}
-			rowYjQty := row.JanQuantity * row.JanPackInnerQty
-
-			if data, ok := aggregatedData[key]; ok {
-				data.YjQuantity += rowYjQty
-				data.JanQuantity += row.JanQuantity
-				aggregatedData[key] = data
-			} else {
-				row.YjQuantity = rowYjQty
-				aggregatedData[key] = row
-			}
-		}
-		var aggregatedRecords []model.UnifiedInputRecord
-		for _, rec := range aggregatedData {
-			aggregatedRecords = append(aggregatedRecords, rec)
+		recordsToProcess := parsedData.Records
+		// ProcessInventoryRecordsが必要とするYJ数量を計算する
+		for i := range recordsToProcess {
+			recordsToProcess[i].YjQuantity = recordsToProcess[i].JanQuantity * recordsToProcess[i].JanPackInnerQty
 		}
 
 		tx, err := conn.Begin()
@@ -61,8 +44,16 @@ func UploadInventoryHandler(conn *sql.DB) http.HandlerFunc {
 		}
 		defer tx.Rollback()
 
+		// ▼▼▼ ここから修正 ▼▼▼
+		// 同じ日付の既存棚卸データを削除する (flag=0が棚卸)
+		if err := db.DeleteTransactionsByFlagAndDate(tx, 0, date); err != nil {
+			http.Error(w, "Failed to delete existing inventory data for date "+date, http.StatusInternalServerError)
+			return
+		}
+		// ▲▲▲ ここまで修正 ▲▲▲
+
 		// centralの関数を呼び出し、マスター準備とトランザクション作成を委任
-		finalRecords, err := central.ProcessInventoryRecords(tx, conn, aggregatedRecords)
+		finalRecords, err := central.ProcessInventoryRecords(tx, conn, recordsToProcess)
 		if err != nil {
 			http.Error(w, "Failed to process inventory records", http.StatusInternalServerError)
 			return
@@ -74,10 +65,6 @@ func UploadInventoryHandler(conn *sql.DB) http.HandlerFunc {
 			finalRecords[i].TransactionDate = date
 			finalRecords[i].ReceiptNumber = receiptNumber
 			finalRecords[i].LineNumber = fmt.Sprintf("%d", i+1)
-
-			// ▼▼▼ ここから修正 ▼▼▼
-			// DatQuantityを設定していた不要なループを完全に削除
-			// ▼▼▼ ここまで修正 ▼▼▼
 		}
 
 		// データベースに保存

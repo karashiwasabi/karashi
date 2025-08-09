@@ -15,7 +15,6 @@ async function handleFileUpload(event, url) {
             method: 'POST',
             body: formData,
         });
-
         const resData = await res.json();
         if (!res.ok) {
             throw new Error(resData.message || 'インポートに失敗しました。');
@@ -36,7 +35,6 @@ export function initBackupButtons() {
     const exportClientsBtn = document.getElementById('exportClientsBtn');
     const importClientsBtn = document.getElementById('importClientsBtn');
     const importClientsInput = document.getElementById('importClientsInput');
-
     if (exportClientsBtn && importClientsBtn && importClientsInput) {
         exportClientsBtn.addEventListener('click', () => {
             window.location.href = '/api/clients/export';
@@ -52,7 +50,6 @@ export function initBackupButtons() {
     const exportProductsBtn = document.getElementById('exportProductsBtn');
     const importProductsBtn = document.getElementById('importProductsBtn');
     const importProductsInput = document.getElementById('importProductsInput');
-    
     if (exportProductsBtn && importProductsBtn && importProductsInput) {
         exportProductsBtn.addEventListener('click', () => {
             window.location.href = '/api/products/export';

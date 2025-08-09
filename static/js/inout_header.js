@@ -2,11 +2,9 @@
 import { setupDateDropdown, setupClientDropdown } from './common_table.js';
 
 const NEW_ENTRY_VALUE = '--new--';
-
 let clientSelect, receiptSelect, saveBtn, deleteBtn, headerDateInput, headerTypeSelect;
 let newClientName = null;
 let currentLoadedReceipt = null;
-
 async function initializeClientDropdown() {
     clientSelect.innerHTML = `<option value="">選択してください</option>`;
     await setupClientDropdown(clientSelect);
@@ -49,7 +47,6 @@ export async function initHeader(getDetailsData, clearDetailsTable, populateDeta
         <option value="">選択してください</option>
         <option value="${NEW_ENTRY_VALUE}">--- 新規作成 ---</option>
     `;
-    
     headerDateInput.addEventListener('change', async () => {
         const date = headerDateInput.value.replace(/-/g, '');
         if (!date) return;
@@ -99,7 +96,6 @@ export async function initHeader(getDetailsData, clearDetailsTable, populateDeta
             newClientName = null;
         }
     });
-
     receiptSelect.addEventListener('change', async () => {
         const selectedValue = receiptSelect.value;
         deleteBtn.disabled = (selectedValue === NEW_ENTRY_VALUE || selectedValue === "");
@@ -130,7 +126,6 @@ export async function initHeader(getDetailsData, clearDetailsTable, populateDeta
             }
         }
     });
-    
     saveBtn.addEventListener('click', async () => {
         let clientCode = clientSelect.value;
         let clientNameToSave = '';
@@ -162,7 +157,6 @@ export async function initHeader(getDetailsData, clearDetailsTable, populateDeta
             records: records,
             originalReceiptNumber: currentLoadedReceipt
         };
-        
         window.showLoading();
 
         try {
@@ -171,7 +165,6 @@ export async function initHeader(getDetailsData, clearDetailsTable, populateDeta
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload),
             });
-
             const resData = await res.json();
             if (!res.ok) {
                 throw new Error(resData.message || `保存に失敗しました (HTTP ${res.status})`);
@@ -181,7 +174,6 @@ export async function initHeader(getDetailsData, clearDetailsTable, populateDeta
             
             resetHeader();
             clearDetailsTable();
-
         } catch (err) {
             console.error(err);
             window.showNotification(err.message, 'error');
@@ -189,7 +181,6 @@ export async function initHeader(getDetailsData, clearDetailsTable, populateDeta
             window.hideLoading();
         }
     });
-
     deleteBtn.addEventListener('click', async () => {
         const receiptNumber = receiptSelect.value;
         if (!receiptNumber || receiptNumber === NEW_ENTRY_VALUE) {
@@ -225,6 +216,5 @@ export async function initHeader(getDetailsData, clearDetailsTable, populateDeta
             window.hideLoading();
         }
     });
-
     headerDateInput.dispatchEvent(new Event('change'));
 }
